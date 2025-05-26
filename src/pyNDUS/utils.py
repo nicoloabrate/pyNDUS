@@ -8,7 +8,7 @@ def zais2zaid(zaid):
     AS2Z = AStoZ()
     AS, A = zaid.split('-')
     A = int(A)
-    Z = AS2Z[AS]
+    Z = int(AS2Z[AS])
     if Z < 10:
         Z *= 1000
     else:

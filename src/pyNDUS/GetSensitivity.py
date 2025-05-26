@@ -816,7 +816,7 @@ class Sensitivity:
         """
         self._sens_rsd = None
 
-    def _sens_rsd_serpent(self):
+    def _sens_rsd_serpent(self, value):
         """
         Build the sensitivity RSD dictionary for Serpent files.
 
