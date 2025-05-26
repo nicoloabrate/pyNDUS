@@ -431,7 +431,7 @@ class Sensitivity:
                 if not isinstance(v, str):
                     raise ValueError(f"Element n.{iv} of the responses list is not string!")
 
-        self._responses = value
+        self._responses = tuple(value)
 
     @property
     def materials(self):
@@ -762,12 +762,23 @@ class Sensitivity:
         self._sens : dict
             Dictionary of sensitivity arrays for each response.
         """
-        sens_avg = {}
-        for resp in self.responses:
+        arr_shape = None
+        for k, v in value.items():
+            if not isinstance(v, np.ndarray):
+                raise ValueError(f"The keys of the sensitivity dict must be np.array, not of type {type(v)}."
+                                "The structure of serpentTools.parsers.sensitivity object might have changed!")
+            if arr_shape is None:
+                arr_shape = v.shape
+            elif arr_shape != v.shape:
+                raise ValueError(f"All sensitivity arrays must have the same shape, but found {arr_shape} and {v.shape} for {k}."
+                                "The structure of serpentTools.parsers.sensitivity object might have changed!")
+
+        sens_avg = np.zeros((len(self.responses), *arr_shape[:-1]))
+        for i, resp in enumerate(self.responses):
             if not isinstance(value[resp], np.ndarray):
                 raise ValueError(f"The keys of the sensitivity dict must be np.array, not of type {type(value[resp])}")
             else:
-                sens_avg[resp] = value[resp][:, :, :, :, 0]
+                sens_avg[i, :, :, :, :] = value[resp][:, :, :, :, 0]
 
         self._sens = sens_avg
 
@@ -835,12 +846,23 @@ class Sensitivity:
         ValueError
             If the sensitivity data is not a numpy array.
         """
-        sens_rsd = {}
-        for resp in self.responses:
+        arr_shape = None
+        for k, v in value.items():
+            if not isinstance(v, np.ndarray):
+                raise ValueError(f"The keys of the sensitivity dict must be np.array, not of type {type(v)}."
+                                "The structure of serpentTools.parsers.sensitivity object might have changed!")
+            if arr_shape is None:
+                arr_shape = v.shape
+            elif arr_shape != v.shape:
+                raise ValueError(f"All sensitivity arrays must have the same shape, but found {arr_shape} and {v.shape} for {k}."
+                                "The structure of serpentTools.parsers.sensitivity object might have changed!")
+
+        sens_rsd = np.zeros((len(self.responses), *arr_shape[:-1]))
+        for i, resp in enumerate(self.responses):
             if not isinstance(value[resp], np.ndarray):
                 raise ValueError(f"The keys of the sensitivity dict must be np.array, not of type {type(value[resp])}")
             else:
-                sens_rsd[resp] = value[resp][:, :, :, :, 1]
+                sens_rsd[i, :, :, :, :] = value[resp][:, :, :, :, 1]
 
         self._sens_rsd = sens_rsd
 
@@ -943,15 +965,19 @@ class Sensitivity:
                 if resp not in self.responses:
                     raise ValueError(f"Response {resp} not available!")
                 else:
-                    resp = [resp]
+                    iR = [self.responses.index(resp)]
             elif not isinstance(resp, list):
                 raise ValueError(f"'resp' should be of type str or list, not of type {type(resp)}")
             else:
+                iR = []
                 for r in resp:
                     if r not in self.responses:
                         raise ValueError(f"Response {resp} not available!")
+                    else:
+                        iR.append(self.responses.index(r))
         else:
             resp = self.responses
+            iR = [ir for ir in range(len(self.responses))]
 
         # --- get group indexes
         if g is not None:
@@ -963,24 +989,12 @@ class Sensitivity:
             iG = [ig for ig in range(len(self.group_structure) - 1)]
 
         # --- get sensitivity vector and uncertainty
-        S_rsd = None
-        if len(resp) == 1:
-            S_avg = self.sens[resp[0]][np.ix_(iM, iZ, iP, iG)]
-            if hasattr(self, "sens_rsd"):
-                S_rsd = self.sens_rsd[resp[0]][np.ix_(iM, iZ, iP, iG)]
-        else:
-            S_avg = {}
-            if hasattr(self, "sens_rsd"):
-                S_rsd = {}
-            for val in resp:
-                S_avg[val] = self.sens[val][np.ix_(iM, iZ, iP, iG)]
-                if hasattr(self, "sens_rsd"):
-                    S_rsd[val] = self.sens_rsd[val][np.ix_(iM, iZ, iP, iG)]
-
-        if S_rsd is None:
-            return S_avg
-        else:
+        S_avg = self.sens[np.ix_(iR, iM, iZ, iP, iG)]
+        if hasattr(self, "sens_rsd"):
+            S_rsd = self.sens_rsd[np.ix_(iR, iM, iZ, iP, iG)]
             return S_avg, S_rsd
+        else:
+            return S_avg
 
 class SensitivityError(Exception):
     pass
