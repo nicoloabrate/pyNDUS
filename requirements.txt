@@ -1,0 +1,10 @@
+numpy
+scipy
+pandas
+matplotlib
+h5py
+pytest
+datetime
+sandy>=1.0.38
+uncertainties
+serpentTools
