@@ -156,7 +156,7 @@ class Sensitivity:
             raise SensitivityError(f"serpentTools.parsers.sensitivity.energies must be a np.array, not of type {type(sens.energies)}."
                                     "The structure of serpentTools.parsers.sensitivity object might have changed!")
         else:
-            self.group_structure = sens.energies
+            self.group_structure = sens.energies[::-1]
 
     def from_eranos(self):
         """
@@ -200,6 +200,17 @@ class Sensitivity:
         iso_pat = re.compile(r'\bISOTOPE\s+(\w+)')
         data_pat = re.compile(r'\bGROUP\s+(\w+)')
 
+        str2MT = OrderedDict({"CAPTURE": 102, "FISSION": 18, "ELASTIC": 2,
+                             "INELASTIC": 4, "N,XN": 106, "NU": 452})
+        MT_str = list(str2MT.keys())
+        MT_int = OrderedDict(zip(str2MT.values(), [i for i in range(len(MT_str))]))
+                # idx_MT_sorted = [2, 3, 1, 0, 4, 5]
+        MT_sorted = tuple(sorted(MT_int.keys()))
+        idx_MT_sorted = []
+        for mt in MT_sorted:
+            idx_MT_sorted.append(MT_int[mt])
+
+        # hard-coded, sanity check on order is reported later
         with open(self.filepath, 'r', encoding='utf-8') as f:
             for iline, line in enumerate(f):
                 if header_pat in line:
@@ -260,7 +271,9 @@ class Sensitivity:
                     if columns is None:
                         num_column = len(perturbations) # len(perturbations) + 2 - (1 if data_line else 0)
                         columns = -np.ones((num_column, nE))
-
+                        if perturbations != MT_str:
+                            raise SensitivityError("The MT order does not match."
+                                                   "The structure of the ERANOS output file might have changed!")
                     iline_data = iline + 1
                     ig = 0
 
@@ -273,8 +286,8 @@ class Sensitivity:
                     if len(parts) != num_column:
                         raise ValueError("Inconsistency between N of titles and N of columns")
                         continue
-                    # file_values = [float(valor) for val in parts]
-                    columns[:, ig] = [float(val) for val in parts]
+                    file_values = np.array([float(val) for val in parts])
+                    columns[:, ig] = file_values[idx_MT_sorted]
                     ig += 1
                 
                 if ig == nE:
@@ -289,8 +302,6 @@ class Sensitivity:
 
         # --- get materials, isotopes and reactions
         perturbations = [2, 4, 18, 102, 106, 452]
-        str2MT = {"CAPTURE": 102, "FISSION": 18, "ELASTIC": 2,
-                  "INELASTIC": 4, "N,XN": 106, "NU": 452}
         try:
             self.materials = list(materials)
             self.zaid = [utils.zais2zaid(za) for za in zais]
@@ -590,11 +601,16 @@ class Sensitivity:
         ValueError
             If any MT is not an integer.
         """
+        if not isinstance(value, Iterable):
+            raise ValueError(f"Expected an Iterable instead of type {type(value)} for 'Sensitivity.MTs'")
+        else:
+            value = sorted(value)
+
         MTs = OrderedDict()
         for imt, mt in enumerate(value):
             if not isinstance(mt, int):
                 raise ValueError(f"Input MTs from ERANOS for attribute MTs must be of type int, not {type(mt)}!")
-            MTs[imt] = mt
+            MTs[mt] = imt
         self._MTs = MTs
 
     def _serpent_MTs(self, value):
@@ -613,6 +629,8 @@ class Sensitivity:
         """
         if not isinstance(value, Iterable):
             raise ValueError(f"Expected an Iterable instead of type {type(value)} for 'Sensitivity.MTs'")
+        else:
+            value = sorted(value)
 
         MTs = OrderedDict()
         for imt, mt in enumerate(value):
@@ -740,7 +758,7 @@ class Sensitivity:
         for iResp, resp in enumerate(self.responses):
             for mat, iMat in self.materials.items():
                 for zais, iZaid in self.zais.items():
-                    for iMT, mt in self.MTs.items():
+                    for mt, iMT in self.MTs.items():
                         if zais in value[resp][mat].keys():
                             sens[iResp, iMat, iZaid, iMT, :] = value[resp][mat][zais][iMT, :]
                         else:
@@ -778,7 +796,7 @@ class Sensitivity:
             if not isinstance(value[resp], np.ndarray):
                 raise ValueError(f"The keys of the sensitivity dict must be np.array, not of type {type(value[resp])}")
             else:
-                sens_avg[i, :, :, :, :] = value[resp][:, :, :, :, 0]
+                sens_avg[i, :, :, :, :] = value[resp][:, :, :, ::-1, 0]
 
         self._sens = sens_avg
 
@@ -990,7 +1008,7 @@ class Sensitivity:
 
         # --- get sensitivity vector and uncertainty
         S_avg = self.sens[np.ix_(iR, iM, iZ, iP, iG)]
-        if hasattr(self, "sens_rsd"):
+        if self.sens_rsd is not None:
             S_rsd = self.sens_rsd[np.ix_(iR, iM, iZ, iP, iG)]
             return S_avg, S_rsd
         else:
