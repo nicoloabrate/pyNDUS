@@ -771,7 +771,7 @@ if __name__ == "__main__":
 
     njoy_ver = 'njoy2016.78'
     author = 'Nicolò Abrate'
-    os.environ['NJOY'] = '/usr/local/bin/njoy2016' 
+    os.environ["NJOY"] = '/usr/local/bin/njoy2016' 
     T = 300 # [K]
 
     mycov = {}
