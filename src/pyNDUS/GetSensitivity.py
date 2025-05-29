@@ -629,8 +629,6 @@ class Sensitivity:
         """
         if not isinstance(value, Iterable):
             raise ValueError(f"Expected an Iterable instead of type {type(value)} for 'Sensitivity.MTs'")
-        else:
-            value = sorted(value)
 
         MTs = OrderedDict()
         for imt, mt in enumerate(value):
