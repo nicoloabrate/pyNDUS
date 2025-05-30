@@ -232,7 +232,7 @@ class Sandwich:
                     intersection = list(set(covMTs) & set(sens_MTs[za]))
                     intersection.sort()
                     # remove total XS to avoid double counting the profiles
-                    if 1 in get_MTs:
+                    if 1 in intersection:
                         if len(intersection) > 2:
                             intersection.remove(1)
                         elif max(intersection) < 110 and len(intersection) == 2:
@@ -285,11 +285,13 @@ class Sandwich:
 
         # --- assign output
         if representativity:
-            self._compute_representativity(sens, sens2, covmat, list_resp, list_mat, map_MF2MT)
+            representativity, dict_map = self.compute_representativity(sens, sens2, covmat, list_resp, list_mat, 
+                                                                  map_MF2MT, self.za, self.sens_MC, sigma=self.sigma)
         elif similarity:
-            self._compute_similarity()
+            similarity, dict_map = self.compute_similarity()
         else:
-            self._compute_uncertainty(sens, covmat, list_resp, list_mat, map_MF2MT)
+            uncertainty, dict_map = self.compute_uncertainty(sens, covmat, list_resp, list_mat,
+                                                        map_MF2MT, self.za, self.sens_MC, sigma=self.sigma)
 
     @property
     def sigma(self):
@@ -376,7 +378,116 @@ class Sandwich:
         #                 # apply sandwich rule
         #                 output[resp][mat][zais][(mt1 , mt2)] = S_r.dot(S_l) # TODO add norm
 
-    def _compute_uncertainty(self, sens, covmat, list_resp, list_mat, map_MF2MT):
+    @staticmethod
+    def compute_uncertainty(sens, covmat, list_resp, list_mat, map_MF2MT,
+                            za_dict, sens_MC, sigma=None):
+        # --- apply sandwich rule
+        output = {}
+        dict_map = {}
+
+        for resp in list_resp:
+
+            output[resp] = {}
+            dict_map[resp] = {}
+            for key in ['materials', 'zaid', 'MTs']:
+                dict_map[resp][key] = {}
+
+            for imat, mat in enumerate(list_mat):
+
+                output[resp][mat] = {}
+                dict_map[resp]["materials"][mat] = imat
+
+                for iza, za in enumerate(za_dict.keys()):
+
+                    e6_mat_id = covmat[za].mat
+                    dict_map[resp]["zaid"][za] = iza
+                    output[resp][mat][za] = {}
+
+                    for mf in map_MF2MT[za].keys():
+                        if mf == "errorr34" or mf == 'errorr35':
+                            # SANDY object does not provide MF=35 in the same formats of MF=31 and MF=33
+                            continue
+
+                        # --- get covariance matrix
+                        cov_df = None
+                        if mf in covmat[za].rcov.keys():
+                            cov_df = covmat[za]
+
+                        # --- diagonal terms 
+                        for mt in map_MF2MT[za][mf]:
+                            # get group-wise sensitivity vector
+                            if sens_MC:
+                                S_avg, S_rsd = sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za])
+                                if S_rsd is not None:
+                                    S = utils.np2unp(np.squeeze(S_avg), sigma * np.squeeze(S_rsd))
+                                else:
+                                    S = np.squeeze(S_avg)
+                            else:
+                                S = np.squeeze(sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za]))
+                            # get covariance matrix
+                            if cov_df is not None:
+                                C = cov_df.get((mt, mt), MF=mf, to_numpy=True)
+                            else:
+                                C = np.zeros((sens.nEne, sens.nEne))
+
+                            # apply sandwich rule
+                            if cov_df is not None:
+                                output[resp][mat][za][(mt, mt)] = np.dot(S.T, np.dot(C, S)) 
+                            else:
+                                output[resp][mat][za][(mt, mt)] = 0
+
+                        # --- covariances
+                        cov_combos = list(permutations(map_MF2MT[za][mf], 2))
+                        for nm in cov_combos:
+                            # get covariance matrix
+                            if cov_df is not None:
+                                C = cov_df.get(nm, MF=mf, to_numpy=True)
+                            else:
+                                C = np.zeros((sens.nEne, sens.nEne))
+
+                            # get group-wise sensitivity vector
+                            if sens_MC:
+                                S_avg_r, S_rsd_r = sens.get([resp], [mat], [nm[0]], [za])
+                                S_avg_l, S_rsd_l = sens.get([resp], [mat], [nm[1]], [za])
+
+                                if S_rsd_r is not None:
+                                    S_r = utils.np2unp(np.squeeze(S_avg_r), sigma * np.squeeze(S_rsd_r))
+                                else:
+                                    S_r = np.squeeze(S_avg_r)
+
+                                if S_rsd_l is not None:
+                                    S_l = utils.np2unp(np.squeeze(S_avg_l), sigma * np.squeeze(S_rsd_l))
+                                else:
+                                    S_l = np.squeeze(S_avg_l)
+                            else:
+                                S_r = np.squeeze(sens.get([resp], [mat], [nm[0]], [za]))
+                                S_l = np.squeeze(sens.get([resp], [mat], [nm[1]], [za]))
+
+                            # apply sandwich rule
+                            if cov_df is not None:
+                                output[resp][mat][za][nm] = np.dot(S_r.T, np.dot(C, S_l))
+                            else:
+                                output[resp][mat][za][nm] = 0
+
+        # --- convert in pandas.DataFrame
+        records = []
+        for resp, mats in output.items():
+            for mat, zas in mats.items():
+                for za, mt_matrix in zas.items():
+                    for (mt1, mt2), value in mt_matrix.items():
+                        records.append((resp, mat, za_dict[za], mt1, mt2, value))
+
+        df = pd.DataFrame(records, columns=["RESPONSE", "MATERIAL", "ZA", "MT_row", "MT_col", "value"])
+        df.set_index(["RESPONSE", "MATERIAL", "ZA", "MT_row", "MT_col"], inplace=True)
+        df_matrix = df["value"].unstack("MT_col")
+
+        uncertainty = df_matrix
+
+        return uncertainty, dict_map
+
+    @staticmethod
+    def compute_representativity(sens, sens2, covmat, list_resp, list_mat, map_MF2MT,
+                                  za_dict, sens_MC, sigma=None):
         # --- apply sandwich rule
         output = {}
         dict_map = {}
@@ -412,14 +523,20 @@ class Sandwich:
                         # --- diagonal terms 
                         for mt in map_MF2MT[za][mf]:
                             # get group-wise sensitivity vector
-                            if self.sens_MC:
-                                S_avg, S_rsd = sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za])
-                                if S_rsd is not None:
-                                    S = utils.np2unp(np.squeeze(S_avg), self.sigma*np.squeeze(S_rsd))
+                            if sens_MC:
+                                S_avg_r, S_rsd_r = sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za])
+                                S_avg_l, S_rsd_l = sens2.get(resp=[resp], mat=[mat], MT=[mt], za=[za])
+                                if S_rsd_r is not None:
+                                    S_r = utils.np2unp(np.squeeze(S_avg_r), sigma * np.squeeze(S_rsd_r))
                                 else:
-                                    S = np.squeeze(S_avg)
+                                    S_r = np.squeeze(S_avg_r)
+                                if S_rsd_l is not None:
+                                    S_l = utils.np2unp(np.squeeze(S_avg_l), sigma * np.squeeze(S_rsd_l))
+                                else:
+                                    S_l = np.squeeze(S_avg_l)
                             else:
-                                S = np.squeeze(sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za]))
+                                S_r = np.squeeze(sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za]))
+                                S_l = np.squeeze(sens2.get(resp=[resp], mat=[mat], MT=[mt], za=[za]))
                             # get covariance matrix
                             if cov_df is not None:
                                 C = cov_df.get((mt, mt), MF=mf, to_numpy=True)
@@ -428,7 +545,7 @@ class Sandwich:
 
                             # apply sandwich rule
                             if cov_df is not None:
-                                output[resp][mat][za][(mt, mt)] = np.dot(S.T, np.dot(C, S)) 
+                                output[resp][mat][za][(mt, mt)] = np.dot(S_r.T, np.dot(C, S_l)) 
                             else:
                                 output[resp][mat][za][(mt, mt)] = 0
 
@@ -442,22 +559,22 @@ class Sandwich:
                                 C = np.zeros((sens.nEne, sens.nEne))
 
                             # get group-wise sensitivity vector
-                            if self.sens_MC:
+                            if sens_MC:
                                 S_avg_r, S_rsd_r = sens.get([resp], [mat], [nm[0]], [za])
-                                S_avg_l, S_rsd_l = sens.get([resp], [mat], [nm[1]], [za])
+                                S_avg_l, S_rsd_l = sens2.get([resp], [mat], [nm[1]], [za])
 
                                 if S_rsd_r is not None:
-                                    S_r = utils.np2unp(np.squeeze(S_avg_r), self.sigma*np.squeeze(S_rsd_r))
+                                    S_r = utils.np2unp(np.squeeze(S_avg_r), sigma * np.squeeze(S_rsd_r))
                                 else:
                                     S_r = np.squeeze(S_avg_r)
 
                                 if S_rsd_l is not None:
-                                    S_l = utils.np2unp(np.squeeze(S_avg_l), self.sigma*np.squeeze(S_rsd_l))
+                                    S_l = utils.np2unp(np.squeeze(S_avg_l), sigma * np.squeeze(S_rsd_l))
                                 else:
                                     S_l = np.squeeze(S_avg_l)
                             else:
                                 S_r = np.squeeze(sens.get([resp], [mat], [nm[0]], [za]))
-                                S_l = np.squeeze(sens.get([resp], [mat], [nm[1]], [za]))
+                                S_l = np.squeeze(sens2.get([resp], [mat], [nm[1]], [za]))
 
                             # apply sandwich rule
                             if cov_df is not None:
@@ -471,118 +588,27 @@ class Sandwich:
             for mat, zas in mats.items():
                 for za, mt_matrix in zas.items():
                     for (mt1, mt2), value in mt_matrix.items():
-                        records.append((resp, mat, self.za[za], mt1, mt2, value))
+                        records.append((resp, mat, za_dict[za], mt1, mt2, value))
 
         df = pd.DataFrame(records, columns=["RESPONSE", "MATERIAL", "ZA", "MT_row", "MT_col", "value"])
         df.set_index(["RESPONSE", "MATERIAL", "ZA", "MT_row", "MT_col"], inplace=True)
         df_matrix = df["value"].unstack("MT_col")
 
-        self.uncertainty = df_matrix
-        self.dict_map = dict_map
-
-    def _compute_representativity(self, sens, sens2, covmat, list_resp, list_mat, map_MF2MT):
-        # --- apply sandwich rule
-        output = {}
-        dict_map = {}
-
+        # --- get normalisation coefficients
+        unc1, dict_map1 = self.compute_uncertainty(sens, covmat, list_resp, list_mat, map_MF2MT,
+                                                    za_dict, sens_MC, sigma=sigma)
+        unc2, dict_map2 = self.compute_uncertainty(sen2, covmat, list_resp, list_mat, map_MF2MT,
+                                                    za_dict, sens_MC, sigma=sigma)
+ 
+        N = {}
         for resp in list_resp:
+            N[resp] = np.sqrt(unc1.loc[(resp)].sum().sum()) * np.sqrt(unc2.loc[(resp)].sum().sum())
 
-            output[resp] = {}
-            dict_map[resp] = {}
-            for key in ['materials', 'zaid', 'MTs']:
-                dict_map[resp][key] = {}
+        # --- assign normalised output
+        representativity = df_matrix
+        dict_map = dict_map
 
-            for imat, mat in enumerate(list_mat):
-
-                output[resp][mat] = {}
-                dict_map[resp]["materials"][mat] = imat
-
-                for iza, za in enumerate(self.za.keys()):
-
-                    e6_mat_id = covmat[za].mat
-                    dict_map[resp]["zaid"][za] = iza
-                    output[resp][mat][za] = {}
-
-                    for mf in map_MF2MT[za].keys():
-                        if mf == "errorr34" or mf == 'errorr35':
-                            # SANDY object does not provide MF=35 in the same formats of MF=31 and MF=33
-                            continue
-
-                        # --- get covariance matrix
-                        cov_df = None
-                        if mf in covmat[za].rcov.keys():
-                            cov_df = covmat[za]
-
-                        # --- diagonal terms 
-                        for mt in map_MF2MT[za][mf]:
-                            # get group-wise sensitivity vector
-                            if self.sens_MC:
-                                S_avg, S_rsd = sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za])
-                                if S_rsd is not None:
-                                    S = utils.np2unp(np.squeeze(S_avg), self.sigma*np.squeeze(S_rsd))
-                                else:
-                                    S = np.squeeze(S_avg)
-                            else:
-                                S = np.squeeze(sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za]))
-                            # get covariance matrix
-                            if cov_df is not None:
-                                C = cov_df.get((mt, mt), MF=mf, to_numpy=True)
-                            else:
-                                C = np.zeros((sens.nEne, sens.nEne))
-
-                            # apply sandwich rule
-                            if cov_df is not None:
-                                output[resp][mat][za][(mt, mt)] = np.dot(S.T, np.dot(C, S)) 
-                            else:
-                                output[resp][mat][za][(mt, mt)] = 0
-
-                        # --- covariances
-                        cov_combos = list(permutations(map_MF2MT[za][mf], 2))
-                        for nm in cov_combos:
-                            # get covariance matrix
-                            if cov_df is not None:
-                                C = cov_df.get(nm, MF=mf, to_numpy=True)
-                            else:
-                                C = np.zeros((sens.nEne, sens.nEne))
-
-                            # get group-wise sensitivity vector
-                            if self.sens_MC:
-                                S_avg_r, S_rsd_r = sens.get([resp], [mat], [nm[0]], [za])
-                                S_avg_l, S_rsd_l = sens.get([resp], [mat], [nm[1]], [za])
-
-                                if S_rsd_r is not None:
-                                    S_r = utils.np2unp(np.squeeze(S_avg_r), self.sigma*np.squeeze(S_rsd_r))
-                                else:
-                                    S_r = np.squeeze(S_avg_r)
-
-                                if S_rsd_l is not None:
-                                    S_l = utils.np2unp(np.squeeze(S_avg_l), self.sigma*np.squeeze(S_rsd_l))
-                                else:
-                                    S_l = np.squeeze(S_avg_l)
-                            else:
-                                S_r = np.squeeze(sens.get([resp], [mat], [nm[0]], [za]))
-                                S_l = np.squeeze(sens.get([resp], [mat], [nm[1]], [za]))
-
-                            # apply sandwich rule
-                            if cov_df is not None:
-                                output[resp][mat][za][nm] = np.dot(S_r.T, np.dot(C, S_l))
-                            else:
-                                output[resp][mat][za][nm] = 0
-
-        # --- convert in pandas.DataFrame
-        records = []
-        for resp, mats in output.items():
-            for mat, zas in mats.items():
-                for za, mt_matrix in zas.items():
-                    for (mt1, mt2), value in mt_matrix.items():
-                        records.append((resp, mat, self.za[za], mt1, mt2, value))
-
-        df = pd.DataFrame(records, columns=["RESPONSE", "MATERIAL", "ZA", "MT_row", "MT_col", "value"])
-        df.set_index(["RESPONSE", "MATERIAL", "ZA", "MT_row", "MT_col"], inplace=True)
-        df_matrix = df["value"].unstack("MT_col")
-
-        self.uncertainty = df_matrix
-        self.dict_map = dict_map
+        return representativity, dict_map
 
 
 class SandwhichError(Exception):
