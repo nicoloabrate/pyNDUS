@@ -96,7 +96,7 @@ class Sandwich:
                 list_resp += list(sens2.responses)
             list_resp = list(set(list_resp))
         elif isinstance(list_resp, str):
-            if list_resp not in sens.response:
+            if list_resp not in sens.responses:
                 raise ValueError(f"{list_resp} not available in 'Sensitivity' object provided!")
             if sens2 is not None:
                 if list_resp not in sens2.responses:
@@ -106,7 +106,7 @@ class Sandwich:
             raise ValueError(f"'list_resp' arg must be str or list, not {type(list_resp)}")
         else:
             for resp in list_resp:
-                if resp not in sens.response:
+                if resp not in sens.responses:
                     raise ValueError(f"{resp} not available in 'Sensitivity' object provided!")
                 if sens2 is not None:
                     if resp not in sens2.responses:
