@@ -286,11 +286,23 @@ class Sandwich:
                 if get_MTs:
                     if za in za_dict.keys():
                         self.MTs[za] = sens_MTs[za]
+                        # remove total XS to avoid double counting the profiles
                         if 1 in self.MTs[za]:
                             if len(self.MTs[za]) > 2:
                                 self.MTs[za].remove(1)
                             elif max(self.MTs[za]) < 110 and len(self.MTs[za]) == 2:
                                 self.MTs[za].remove(1)
+                        # remove MF=31 (452) from serpent sensitivities to avoid double counting the profiles
+                        if sens.reader == 'serpent':
+                            if 452 in self.MTs[za]:
+                                if 455 in self.MTs[za] and 456 in self.MTs[za]:
+                                    self.MTs[za].remove(452)
+                        if sens2 is not None:
+                            if sens2.reader == 'serpent':
+                                if 452 in self.MTs[za]:
+                                    if 455 in self.MTs[za] and 456 in self.MTs[za]:
+                                        self.MTs[za].remove(452)
+
                 else:
                     intersection = list(set(list_MTs) & set(sens_MTs[za]))
                     sens_MTs[za] = intersection.copy()
