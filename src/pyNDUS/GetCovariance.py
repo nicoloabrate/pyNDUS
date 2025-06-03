@@ -86,7 +86,7 @@ class GetCovariance():
         - MF=33 for cross sections
     """
     def __init__(self, zaid, temperature=300, group_structure=None, egridname=None,
-                 lib="endfb_80", author=None, njoy_ver=None, cwd=None):
+                 lib="endfb_80", process_resonances=True, author=None, njoy_ver=None, cwd=None):
         """
         Initialize the GetCovariance object, create necessary directories, and extract covariance matrices.
 
@@ -102,6 +102,8 @@ class GetCovariance():
             Name of the energy grid.
         lib : str, optional
             Nuclear data library to use.
+        process_resonances: bool, optional
+            Flag for processing for resonance parameter covariances
         author : str, optional
             Author name for logging.
         njoy_ver : str, optional
@@ -182,7 +184,8 @@ class GetCovariance():
             errorr_path = cwd.joinpath('errorr', f"{errorr_name}")
             errorr_out = GetCovariance.sandy_calls_errorr(endf6_tape, zaid, temperature,
                                                           group_structure, egridname,
-                                                          errorr_path, lib, author, njoy_ver)
+                                                          errorr_path, process_resonances,
+                                                          lib, author, njoy_ver)
 
         self.MFs2MTs = errorr_out
         self.mat = errorr_out
@@ -640,7 +643,7 @@ class GetCovariance():
 
     @staticmethod
     def sandy_calls_errorr(endf6_tape, zaid, temperature, group_structure, egridname, errorr_path, 
-                           lib, author, njoy_ver):
+                           process_resonances, lib, author, njoy_ver):
         """
         Run the ERRORR module of NJOY via SANDY and save output files.
 
@@ -670,7 +673,12 @@ class GetCovariance():
         errorr : dict
             Dictionary of ERRORR objects.
         """
-        njoy_inp = endf6_tape.get_errorr(groupr_kws=dict(ek=group_structure), errorr_kws=dict(ek=group_structure), 
+        if process_resonances:
+            irespr = 1
+        else:
+            irespr = 0
+
+        njoy_inp = endf6_tape.get_errorr(groupr_kws=dict(ek=group_structure, irespr=irespr), errorr_kws=dict(ek=group_structure), 
                                          dryrun=True, temperature=temperature)
 
         base_path = errorr_path.parent.parent
