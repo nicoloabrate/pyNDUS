@@ -111,29 +111,31 @@ class Sandwich:
                 if sens2 is not None:
                     if resp not in sens2.responses:
                         raise ValueError(f"{resp} not available in 'Sensitivity' object 'sens2' provided!")
-        
+
         # --- check materials
-        if list_mat is None:
-            list_mat = list(sens.materials.keys())
-            if sens2 is not None:
-                list_mat += list(sens2.materials.keys())
-            list_mat = list(set(list_mat))
-        elif isinstance(list_mat, str):
-            if list_mat not in sens.materials.keys():
-                raise ValueError(f"{list_mat} not available in 'Sensitivity' object provided!")
-            if sens2 is not None:
-                if list_mat not in sens2.materials.keys():
-                    raise ValueError(f"{list_mat} not available in 'Sensitivity' object 'sens2' provided!")
-            list_mat = [list_mat]
-        elif not isinstance(list_mat, list):
-            raise ValueError(f"'list_mat' arg must be str or list, not {type(list_mat)}")
-        else:
-            for mat in list_mat:
-                if mat not in sens.matonse.keys():
-                    raise ValueError(f"{mat} not available in 'Sensitivity' object provided!")
+        if not representativity:
+            if list_mat is None:
+                list_mat = list(sens.materials.keys())
                 if sens2 is not None:
-                    if mat not in sens2.materials.keys():
-                        raise ValueError(f"{mat} not available in 'Sensitivity' object 'sens2' provided!")
+                    list_mat += list(sens2.materials.keys())
+                list_mat = list(set(list_mat))
+            elif isinstance(list_mat, str):
+                if list_mat not in sens.materials.keys():
+                    raise ValueError(f"{list_mat} not available in 'Sensitivity' object provided!")
+                if sens2 is not None:
+                    if list_mat not in sens2.materials.keys():
+                        raise ValueError(f"{list_mat} not available in 'Sensitivity' object 'sens2' provided!")
+                list_mat = [list_mat]
+            elif not isinstance(list_mat, list):
+                raise ValueError(f"'list_mat' arg must be str or list, not {type(list_mat)}")
+            else:
+                for mat in list_mat:
+                    if mat not in sens.materials.keys():
+                        raise ValueError(f"{mat} not available in 'Sensitivity' object provided!")
+                    if sens2 is not None:
+                        if mat not in sens2.materials.keys():
+                            raise ValueError(f"{mat} not available in 'Sensitivity' object 'sens2' provided!")
+
         # --- check responses
         if list_za is None:
             list_za = list(sens.zaid.keys())
@@ -198,10 +200,20 @@ class Sandwich:
             if not isinstance(za, int):
                 za = utils.zais2zaid(za)
 
-            idx = sens.zaid[za]
-            zais = list(sens.zais.keys())[idx]
+            if za in sens.zaid.keys():
+                idx = sens.zaid[za]
+                zais = list(sens.zais.keys())[idx]
+
+            elif sens2 is not None:
+                if za in sens2.zaid.keys():
+                    idx = sens2.zaid[za]
+                    zais = list(sens2.zais.keys())[idx]
+
             if is_covmat:
-                if za in covmat.keys():
+                if not representativity:
+                    if za in covmat.keys():
+                        za_dict[za] = zais
+                else:
                     za_dict[za] = zais
             else:
                 za_dict[za] = zais
@@ -210,9 +222,9 @@ class Sandwich:
             if is_covmat:
                 if za in covmat.keys():
                     map_MF2MT[za] = covmat[za].MFs2MTs
-                # else:
-                #     map_MF2MT[za] = {}
-                #     map_MF2MT[za]["errorr33"] = []
+                else:
+                    map_MF2MT[za] = {}
+                    map_MF2MT[za]["errorr33"] = []
 
             # --- get MTs in sensitivity
             sens_MTs[za] = list(sens.MTs.values())
@@ -240,7 +252,10 @@ class Sandwich:
 
                     sens_MTs[za] = intersection.copy()
                     if za in za_dict.keys():
-                        self.MTs[za] = intersection.copy()
+                        if not representativity:
+                            self.MTs[za] = intersection.copy()
+                        else:
+                            self.MTs[za] = intersection
 
                         for mf in map_MF2MT[za].keys():
                             map_MF2MT[za][mf] = []
@@ -250,9 +265,12 @@ class Sandwich:
                             map_MF2MT[za][mf].append(mt)
 
                 else:
-                    intersection = list(set(list_MTs) & set(sens_MTs[za]) & set(covMTs))
-                    intersection.sort()
-                    sens_MTs[za] = intersection.copy()
+                    if not representativity:
+                        intersection = list(set(list_MTs) & set(sens_MTs[za]) & set(covMTs))
+                        intersection.sort()
+                        sens_MTs[za] = intersection.copy()
+                    else:
+                        sens_MTs[za] = list(set(list_MTs + sens_MTs[za] + covMTs))
                     if za in za_dict.keys():
                         self.MTs[za] = intersection.copy()
 
@@ -285,13 +303,20 @@ class Sandwich:
 
         # --- assign output
         if representativity:
-            representativity, dict_map = self.compute_representativity(sens, sens2, covmat, list_resp, list_mat, 
-                                                                  map_MF2MT, self.za, self.sens_MC, sigma=self.sigma)
+            representativity, dict_map = self.compute_representativity(sens, sens2, covmat, list_resp,
+                                                                       map_MF2MT, self.za, self.sens_MC, sigma=self.sigma)
+            self.representativity = representativity
+            self.dict_map = dict_map
         elif similarity:
             similarity, dict_map = self.compute_similarity()
+            self.similarity = similarity
+            self.dict_map = dict_map
         else:
             uncertainty, dict_map = self.compute_uncertainty(sens, covmat, list_resp, list_mat,
                                                         map_MF2MT, self.za, self.sens_MC, sigma=self.sigma)
+            self.uncertainty = uncertainty
+            self.dict_map = dict_map
+
 
     @property
     def sigma(self):
@@ -325,7 +350,7 @@ class Sandwich:
         self._za = value
 
     def _compute_similarity(self, list_resp, list_MT, list_mat, list_za):
-        
+
         raise SandwhichError("Similarity calculation is not implemented yet.")
         # # --- apply sandwich rule
         # output = {}
@@ -399,7 +424,11 @@ class Sandwich:
 
                 for iza, za in enumerate(za_dict.keys()):
 
-                    e6_mat_id = covmat[za].mat
+                    if za in covmat.keys():
+                        e6_mat_id = covmat[za].mat
+                    else:
+                        e6_mat_id = None
+
                     dict_map[resp]["zaid"][za] = iza
                     output[resp][mat][za] = {}
 
@@ -410,45 +439,66 @@ class Sandwich:
 
                         # --- get covariance matrix
                         cov_df = None
-                        if mf in covmat[za].rcov.keys():
-                            cov_df = covmat[za]
+                        if za in covmat.keys():
+                            if mf in covmat[za].rcov.keys():
+                                cov_df = covmat[za]
 
                         # --- diagonal terms 
                         for mt in map_MF2MT[za][mf]:
+                            exist = resp in sens.responses and mat in sens.materials.keys() and mt in sens.MTs.keys() and za in sens.zaid.keys()
                             # get group-wise sensitivity vector
                             if sens_MC:
-                                S_avg, S_rsd = sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za])
+                                if exist:
+                                    S_avg, S_rsd = sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za])
+                                else:
+                                    S_avg = np.zeros((sens.n_groups, ))
+                                    S_rsd = None
+
                                 if S_rsd is not None:
                                     S = utils.np2unp(np.squeeze(S_avg), sigma * np.squeeze(S_rsd))
                                 else:
                                     S = np.squeeze(S_avg)
+
                             else:
-                                S = np.squeeze(sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za]))
+                                if exist:
+                                    S = np.squeeze(sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za]))
+                                else:
+                                    S = np.zeros((sens.n_groups, ))
                             # get covariance matrix
                             if cov_df is not None:
                                 C = cov_df.get((mt, mt), MF=mf, to_numpy=True)
-                            else:
-                                C = np.zeros((sens.nEne, sens.nEne))
 
                             # apply sandwich rule
                             if cov_df is not None:
-                                output[resp][mat][za][(mt, mt)] = np.dot(S.T, np.dot(C, S)) 
+                                if exist:
+                                    output[resp][mat][za][(mt, mt)] = np.dot(S.T, np.dot(C, S)) 
+                                else:
+                                    output[resp][mat][za][(mt, mt)] = 0
                             else:
                                 output[resp][mat][za][(mt, mt)] = 0
 
                         # --- covariances
                         cov_combos = list(permutations(map_MF2MT[za][mf], 2))
                         for nm in cov_combos:
+                            exist = resp in sens.responses and mat in sens.materials.keys() and nm[0] in sens.MTs.keys() and za in sens.zaid.keys()
+                            exist2 = resp in sens.responses and mat in sens.materials.keys() and nm[1] in sens.MTs.keys() and za in sens.zaid.keys()
                             # get covariance matrix
                             if cov_df is not None:
                                 C = cov_df.get(nm, MF=mf, to_numpy=True)
-                            else:
-                                C = np.zeros((sens.nEne, sens.nEne))
 
                             # get group-wise sensitivity vector
                             if sens_MC:
-                                S_avg_r, S_rsd_r = sens.get([resp], [mat], [nm[0]], [za])
-                                S_avg_l, S_rsd_l = sens.get([resp], [mat], [nm[1]], [za])
+                                if exist:
+                                   S_avg_r, S_rsd_r = sens.get([resp], [mat], [nm[0]], [za])
+                                else:
+                                    S_avg_r = np.zeros((sens.n_groups, ))
+                                    S_rsd_r = None
+
+                                if exist2:
+                                    S_avg_l, S_rsd_l = sens.get([resp], [mat], [nm[1]], [za])
+                                else:
+                                    S_avg_l = np.zeros((sens.n_groups, ))
+                                    S_rsd_l = None
 
                                 if S_rsd_r is not None:
                                     S_r = utils.np2unp(np.squeeze(S_avg_r), sigma * np.squeeze(S_rsd_r))
@@ -460,12 +510,22 @@ class Sandwich:
                                 else:
                                     S_l = np.squeeze(S_avg_l)
                             else:
-                                S_r = np.squeeze(sens.get([resp], [mat], [nm[0]], [za]))
-                                S_l = np.squeeze(sens.get([resp], [mat], [nm[1]], [za]))
+                                if exist:
+                                    S_r = np.squeeze(sens.get([resp], [mat], [nm[0]], [za]))
+                                else:
+                                    S_r = np.zeros((sens.n_groups, ))
+
+                                if exist2:
+                                    S_l = np.squeeze(sens.get([resp], [mat], [nm[1]], [za]))
+                                else:
+                                    S_l = np.zeros((sens.n_groups, ))
 
                             # apply sandwich rule
                             if cov_df is not None:
-                                output[resp][mat][za][nm] = np.dot(S_r.T, np.dot(C, S_l))
+                                if exist and exist2:
+                                    output[resp][mat][za][nm] = np.dot(S_r.T, np.dot(C, S_l))
+                                else:
+                                    output[resp][mat][za][nm] = 0
                             else:
                                 output[resp][mat][za][nm] = 0
 
@@ -486,8 +546,19 @@ class Sandwich:
         return uncertainty, dict_map
 
     @staticmethod
-    def compute_representativity(sens, sens2, covmat, list_resp, list_mat, map_MF2MT,
+    def compute_representativity(sens, sens2, covmat, list_resp, map_MF2MT,
                                   za_dict, sens_MC, sigma=None):
+
+        if sens.reader == 'serpent':
+            mat = 'total'
+        elif sens.reader == 'eranos':
+            mat = 'REACTOR'
+
+        if sens2.reader == 'serpent':
+            mat2 = 'total'
+        elif sens2.reader == 'eranos':
+            mat2 = 'REACTOR'
+
         # --- apply sandwich rule
         output = {}
         dict_map = {}
@@ -496,115 +567,178 @@ class Sandwich:
 
             output[resp] = {}
             dict_map[resp] = {}
-            for key in ['materials', 'zaid', 'MTs']:
+            for key in ['zaid', 'MTs']:
                 dict_map[resp][key] = {}
 
-            for imat, mat in enumerate(list_mat):
-
-                output[resp][mat] = {}
-                dict_map[resp]["materials"][mat] = imat
-
-                for iza, za in enumerate(self.za.keys()):
-
+            for iza, za in enumerate(za_dict.keys()):
+                if za in covmat.keys():
                     e6_mat_id = covmat[za].mat
-                    dict_map[resp]["zaid"][za] = iza
-                    output[resp][mat][za] = {}
+                else:
+                    e6_mat_id = None
 
-                    for mf in map_MF2MT[za].keys():
-                        if mf == "errorr34" or mf == 'errorr35':
-                            # SANDY object does not provide MF=35 in the same formats of MF=31 and MF=33
-                            continue
+                dict_map[resp]["zaid"][za] = iza
+                output[resp][za] = {}
 
-                        # --- get covariance matrix
-                        cov_df = None
+                for mf in map_MF2MT[za].keys():
+                    if mf == "errorr34" or mf == 'errorr35':
+                        # SANDY object does not provide MF=35 in the same formats of MF=31 and MF=33
+                        continue
+
+                    # --- get covariance matrix
+                    cov_df = None
+                    if za in covmat.keys():
                         if mf in covmat[za].rcov.keys():
                             cov_df = covmat[za]
 
-                        # --- diagonal terms 
-                        for mt in map_MF2MT[za][mf]:
-                            # get group-wise sensitivity vector
-                            if sens_MC:
+                    # --- diagonal terms 
+                    for mt in map_MF2MT[za][mf]:
+                        exist = resp in sens.responses and mat in sens.materials.keys() and mt in sens.MTs.keys() and za in sens.zaid.keys()
+                        exist2 = resp in sens2.responses and mat in sens2.materials.keys() and mt in sens2.MTs.keys() and za in sens2.zaid.keys()
+                        # get group-wise sensitivity vector
+                        if sens_MC:
+                            if exist:
                                 S_avg_r, S_rsd_r = sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za])
-                                S_avg_l, S_rsd_l = sens2.get(resp=[resp], mat=[mat], MT=[mt], za=[za])
-                                if S_rsd_r is not None:
-                                    S_r = utils.np2unp(np.squeeze(S_avg_r), sigma * np.squeeze(S_rsd_r))
-                                else:
-                                    S_r = np.squeeze(S_avg_r)
-                                if S_rsd_l is not None:
-                                    S_l = utils.np2unp(np.squeeze(S_avg_l), sigma * np.squeeze(S_rsd_l))
-                                else:
-                                    S_l = np.squeeze(S_avg_l)
                             else:
+                                S_avg_r = np.zeros((sens.n_groups, ))
+                                S_rsd_r = None
+
+                            if exist2:
+                                S_avg_l, S_rsd_l = sens2.get(resp=[resp], mat=[mat2], MT=[mt], za=[za])
+                            else:
+                                S_avg_l = np.zeros((sens.n_groups, ))
+                                S_rsd_r = None
+
+                            if S_rsd_r is not None:
+                                S_r = utils.np2unp(np.squeeze(S_avg_r), sigma * np.squeeze(S_rsd_r))
+                            else:
+                                S_r = np.squeeze(S_avg_r)
+
+                            if S_rsd_l is not None:
+                                S_l = utils.np2unp(np.squeeze(S_avg_l), sigma * np.squeeze(S_rsd_l))
+                            else:
+                                S_l = np.squeeze(S_avg_l)
+
+                        else:
+                            if exist:
                                 S_r = np.squeeze(sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za]))
-                                S_l = np.squeeze(sens2.get(resp=[resp], mat=[mat], MT=[mt], za=[za]))
-                            # get covariance matrix
-                            if cov_df is not None:
-                                C = cov_df.get((mt, mt), MF=mf, to_numpy=True)
                             else:
-                                C = np.zeros((sens.nEne, sens.nEne))
+                                S_r = np.zeros((sens.n_groups, ))
 
-                            # apply sandwich rule
-                            if cov_df is not None:
-                                output[resp][mat][za][(mt, mt)] = np.dot(S_r.T, np.dot(C, S_l)) 
+                            if exist2:
+                                S_l = np.squeeze(sens2.get(resp=[resp], mat=[mat2], MT=[mt], za=[za]))
                             else:
-                                output[resp][mat][za][(mt, mt)] = 0
+                                S_l = np.zeros((sens.n_groups, ))
 
-                        # --- covariances
-                        cov_combos = list(permutations(map_MF2MT[za][mf], 2))
-                        for nm in cov_combos:
-                            # get covariance matrix
-                            if cov_df is not None:
-                                C = cov_df.get(nm, MF=mf, to_numpy=True)
+                        # get covariance matrix
+                        if cov_df is not None:
+                            C = cov_df.get((mt, mt), MF=mf, to_numpy=True)
+
+                        # apply sandwich rule
+                        if cov_df is not None:
+                            if exist and exist2:
+                                output[resp][za][(mt, mt)] = np.dot(S_r.T, np.dot(C, S_l)) 
                             else:
-                                C = np.zeros((sens.nEne, sens.nEne))
+                                output[resp][za][(mt, mt)] = 0
+                        else:
+                            output[resp][za][(mt, mt)] = 0
 
-                            # get group-wise sensitivity vector
-                            if sens_MC:
+                    # --- covariances
+                    cov_combos = list(permutations(map_MF2MT[za][mf], 2))
+                    for nm in cov_combos:
+                        exist = resp in sens.responses and mat in sens.materials.keys() and nm[0] in sens.MTs.keys() and za in sens.zaid.keys()
+                        exist2 = resp in sens2.responses and mat in sens2.materials.keys() and nm[1] in sens2.MTs.keys() and za in sens2.zaid.keys()
+                        # get group-wise sensitivity vector
+                        if sens_MC:
+                            if exist:
                                 S_avg_r, S_rsd_r = sens.get([resp], [mat], [nm[0]], [za])
-                                S_avg_l, S_rsd_l = sens2.get([resp], [mat], [nm[1]], [za])
-
-                                if S_rsd_r is not None:
-                                    S_r = utils.np2unp(np.squeeze(S_avg_r), sigma * np.squeeze(S_rsd_r))
-                                else:
-                                    S_r = np.squeeze(S_avg_r)
-
-                                if S_rsd_l is not None:
-                                    S_l = utils.np2unp(np.squeeze(S_avg_l), sigma * np.squeeze(S_rsd_l))
-                                else:
-                                    S_l = np.squeeze(S_avg_l)
                             else:
+                                S_avg_r = np.zeros((sens.n_groups, ))
+                                S_rsd_r = None
+
+                            if exist2:
+                                S_avg_l, S_rsd_l = sens2.get([resp], [mat2], [nm[1]], [za])
+                            else:
+                                S_avg_l = np.zeros((sens.n_groups, ))
+                                S_rsd_l = None
+
+                            if S_rsd_r is not None:
+                                S_r = utils.np2unp(np.squeeze(S_avg_r), sigma * np.squeeze(S_rsd_r))
+                            else:
+                                S_r = np.squeeze(S_avg_r)
+
+                            if S_rsd_l is not None:
+                                S_l = utils.np2unp(np.squeeze(S_avg_l), sigma * np.squeeze(S_rsd_l))
+                            else:
+                                S_l = np.squeeze(S_avg_l)
+                        else:
+                            if exist:
                                 S_r = np.squeeze(sens.get([resp], [mat], [nm[0]], [za]))
-                                S_l = np.squeeze(sens2.get([resp], [mat], [nm[1]], [za]))
-
-                            # apply sandwich rule
-                            if cov_df is not None:
-                                output[resp][mat][za][nm] = np.dot(S_r.T, np.dot(C, S_l))
                             else:
-                                output[resp][mat][za][nm] = 0
+                                S_r = np.zeros((sens.n_groups, ))
 
-        # --- convert in pandas.DataFrame
-        records = []
-        for resp, mats in output.items():
-            for mat, zas in mats.items():
-                for za, mt_matrix in zas.items():
-                    for (mt1, mt2), value in mt_matrix.items():
-                        records.append((resp, mat, za_dict[za], mt1, mt2, value))
+                            if exist2:
+                                S_l = np.squeeze(sens2.get([resp], [mat2], [nm[1]], [za]))
+                            else:
+                                S_l = np.zeros((sens.n_groups, ))
 
-        df = pd.DataFrame(records, columns=["RESPONSE", "MATERIAL", "ZA", "MT_row", "MT_col", "value"])
-        df.set_index(["RESPONSE", "MATERIAL", "ZA", "MT_row", "MT_col"], inplace=True)
-        df_matrix = df["value"].unstack("MT_col")
+                        # get covariance matrix
+                        if cov_df is not None:
+                            C = cov_df.get(nm, MF=mf, to_numpy=True)
+
+                        # apply sandwich rule
+                        if cov_df is not None:
+                            if exist and exist2:
+                                output[resp][za][nm] = np.dot(S_r.T, np.dot(C, S_l))
+                            else:
+                                output[resp][za][nm] = 0
+                        else:
+                            output[resp][za][nm] = 0
 
         # --- get normalisation coefficients
-        unc1, dict_map1 = self.compute_uncertainty(sens, covmat, list_resp, list_mat, map_MF2MT,
-                                                    za_dict, sens_MC, sigma=sigma)
-        unc2, dict_map2 = self.compute_uncertainty(sen2, covmat, list_resp, list_mat, map_MF2MT,
-                                                    za_dict, sens_MC, sigma=sigma)
- 
-        N = {}
-        for resp in list_resp:
-            N[resp] = np.sqrt(unc1.loc[(resp)].sum().sum()) * np.sqrt(unc2.loc[(resp)].sum().sum())
+        unc1, dict_map1 = Sandwich.compute_uncertainty(sens, covmat, list_resp, [mat], map_MF2MT,
+                                                        za_dict, sens_MC, sigma=sigma)
+        unc2, dict_map2 = Sandwich.compute_uncertainty(sens2, covmat, list_resp, [mat2], map_MF2MT,
+                                                        za_dict, sens_MC, sigma=sigma)
 
-        # --- assign normalised output
+        # --- assign normalised output and convert in pandas.DataFrame
+        records = []
+        for resp, zas in output.items():
+            for za, mt_matrix in zas.items():
+                for (mt1, mt2), value in mt_matrix.items():
+                    records.append((resp, za_dict[za], mt1, mt2, value))
+
+        df = pd.DataFrame(records, columns=["RESPONSE", "ZA", "MT_row", "MT_col", "value"])
+        df.set_index(["RESPONSE", "ZA", "MT_row", "MT_col"], inplace=True)
+        df_matrix = df["value"].unstack("MT_col")
+
+        for resp in list_resp:
+            val1 = unc1.loc[(resp, mat)].sum().sum()
+            val2 = unc2.loc[(resp, mat2)].sum().sum()
+            if hasattr(val1, 'nominal_value'):
+                if val1.n < 0:
+                    val1 = -unp.sqrt(-val1)
+                else:
+                    val1 = unp.sqrt(val1)
+            else:
+                if val1 < 0:
+                    val1 = -np.sqrt(-val1)
+                else:
+                    val1 = np.sqrt(val1)
+
+            if hasattr(val2, 'nominal_value'):
+                if val2.n < 0:
+                    val2 = -unp.sqrt(-val2)
+                else:
+                    val2 = unp.sqrt(val2)
+            else:
+                if val2 < 0:
+                    val2 = -np.sqrt(-val2)
+                else:
+                    val2 = np.sqrt(val2)
+
+            idx = pd.IndexSlice
+            df_matrix.loc[idx[resp, :], :] /= (val1 * val2)
+
         representativity = df_matrix
         dict_map = dict_map
 
