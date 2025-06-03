@@ -168,9 +168,9 @@ class Sensitivity:
             If the file format or structure is not as expected.
         """
         if 'eranos33' in self.filepath.suffix:
-            energy_grid = utils.ECCO33
+            energy_grid = utils.ECCO33[::-1]
         elif 'eranos1968' in self.filepath.suffix:
-            energy_grid = utils.ECCO1968
+            energy_grid = utils.ECCO1968[::-1]
         else:
             raise SensitivityError(f"Cannot read file format {self.filepath.name}")
 
@@ -878,11 +878,11 @@ class Sensitivity:
             if not isinstance(value[resp], np.ndarray):
                 raise ValueError(f"The keys of the sensitivity dict must be np.array, not of type {type(value[resp])}")
             else:
-                sens_rsd[i, :, :, :, :] = value[resp][:, :, :, :, 1]
+                sens_rsd[i, :, :, :, :] = value[resp][:, :, :, ::-1, 1]
 
         self._sens_rsd = sens_rsd
 
-    def get(self, resp=None, mat=None, MT=None, za=None, g=None):
+    def get(self, resp=None, mat=None, MT=None, za=None, g=None, group_order='legacy'):
         """
         Extract sensitivity profiles and uncertainties for specified parameters.
 
@@ -998,11 +998,16 @@ class Sensitivity:
         # --- get group indexes
         if g is not None:
             if isinstance(g, int):
-                iG = [g - 1]
+                if group_order == 'inverse':
+                    iG = [self._groups - 1]
+                else:
+                    iG = [g - 1]
             elif not isinstance(g, list):
                 raise ValueError(f"'g' must be of type int or list, not of type {type(g)}")
         else:
             iG = [ig for ig in range(len(self.group_structure) - 1)]
+            if group_order == 'inverse':
+                iG = iG[::-1]
 
         # --- get sensitivity vector and uncertainty
         S_avg = self.sens[np.ix_(iR, iM, iZ, iP, iG)]
