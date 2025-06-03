@@ -75,9 +75,12 @@ class Sandwich:
             if not isinstance(covmat, dict):
                 raise ValueError(f"'covmat' arg must be of type dict, not of type {type(covmat)}")
             else:
-                for k, v in covmat.items():
-                    if not isinstance(v, GetCovariance):
-                        raise ValueError(f"'covmat' items must be of type GetCovariance, not of type {type(covmat)}")
+                if len(covmat) == 0:
+                    raise ValueError(f"'covmat' dict is empty! Check the dict with the covariances.")
+                else:
+                    for k, v in covmat.items():
+                        if not isinstance(v, GetCovariance):
+                            raise ValueError(f"'covmat' items must be of type GetCovariance, not of type {type(covmat)}")
             is_covmat = True
         else:
             is_covmat = False
