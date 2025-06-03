@@ -449,7 +449,7 @@ class Sandwich:
                             # get group-wise sensitivity vector
                             if sens_MC:
                                 if exist:
-                                    S_avg, S_rsd = sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za])
+                                    S_avg, S_rsd = sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za], group_order="ascending")
                                 else:
                                     S_avg = np.zeros((sens.n_groups, ))
                                     S_rsd = None
@@ -461,7 +461,7 @@ class Sandwich:
 
                             else:
                                 if exist:
-                                    S = np.squeeze(sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za]))
+                                    S = np.squeeze(sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za]), group_order="ascending")
                                 else:
                                     S = np.zeros((sens.n_groups, ))
                             # get covariance matrix
@@ -489,13 +489,13 @@ class Sandwich:
                             # get group-wise sensitivity vector
                             if sens_MC:
                                 if exist:
-                                   S_avg_r, S_rsd_r = sens.get([resp], [mat], [nm[0]], [za])
+                                   S_avg_r, S_rsd_r = sens.get([resp], [mat], [nm[0]], [za], group_order="ascending")
                                 else:
                                     S_avg_r = np.zeros((sens.n_groups, ))
                                     S_rsd_r = None
 
                                 if exist2:
-                                    S_avg_l, S_rsd_l = sens.get([resp], [mat], [nm[1]], [za])
+                                    S_avg_l, S_rsd_l = sens.get([resp], [mat], [nm[1]], [za], group_order="ascending")
                                 else:
                                     S_avg_l = np.zeros((sens.n_groups, ))
                                     S_rsd_l = None
@@ -511,12 +511,12 @@ class Sandwich:
                                     S_l = np.squeeze(S_avg_l)
                             else:
                                 if exist:
-                                    S_r = np.squeeze(sens.get([resp], [mat], [nm[0]], [za]))
+                                    S_r = np.squeeze(sens.get([resp], [mat], [nm[0]], [za]), group_order="ascending")
                                 else:
                                     S_r = np.zeros((sens.n_groups, ))
 
                                 if exist2:
-                                    S_l = np.squeeze(sens.get([resp], [mat], [nm[1]], [za]))
+                                    S_l = np.squeeze(sens.get([resp], [mat], [nm[1]], [za]), group_order="ascending")
                                 else:
                                     S_l = np.zeros((sens.n_groups, ))
 
@@ -597,13 +597,13 @@ class Sandwich:
                         # get group-wise sensitivity vector
                         if sens_MC:
                             if exist:
-                                S_avg_r, S_rsd_r = sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za])
+                                S_avg_r, S_rsd_r = sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za], group_order="ascending")
                             else:
                                 S_avg_r = np.zeros((sens.n_groups, ))
                                 S_rsd_r = None
 
                             if exist2:
-                                S_avg_l, S_rsd_l = sens2.get(resp=[resp], mat=[mat2], MT=[mt], za=[za])
+                                S_avg_l, S_rsd_l = sens2.get(resp=[resp], mat=[mat2], MT=[mt], za=[za], group_order="ascending")
                             else:
                                 S_avg_l = np.zeros((sens.n_groups, ))
                                 S_rsd_r = None
@@ -620,12 +620,12 @@ class Sandwich:
 
                         else:
                             if exist:
-                                S_r = np.squeeze(sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za]))
+                                S_r = np.squeeze(sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za]), group_order="ascending")
                             else:
                                 S_r = np.zeros((sens.n_groups, ))
 
                             if exist2:
-                                S_l = np.squeeze(sens2.get(resp=[resp], mat=[mat2], MT=[mt], za=[za]))
+                                S_l = np.squeeze(sens2.get(resp=[resp], mat=[mat2], MT=[mt], za=[za]), group_order="ascending")
                             else:
                                 S_l = np.zeros((sens.n_groups, ))
 
@@ -650,13 +650,13 @@ class Sandwich:
                         # get group-wise sensitivity vector
                         if sens_MC:
                             if exist:
-                                S_avg_r, S_rsd_r = sens.get([resp], [mat], [nm[0]], [za])
+                                S_avg_r, S_rsd_r = sens.get([resp], [mat], [nm[0]], [za], group_order="ascending")
                             else:
                                 S_avg_r = np.zeros((sens.n_groups, ))
                                 S_rsd_r = None
 
                             if exist2:
-                                S_avg_l, S_rsd_l = sens2.get([resp], [mat2], [nm[1]], [za])
+                                S_avg_l, S_rsd_l = sens2.get([resp], [mat2], [nm[1]], [za], group_order="ascending")
                             else:
                                 S_avg_l = np.zeros((sens.n_groups, ))
                                 S_rsd_l = None
@@ -672,12 +672,12 @@ class Sandwich:
                                 S_l = np.squeeze(S_avg_l)
                         else:
                             if exist:
-                                S_r = np.squeeze(sens.get([resp], [mat], [nm[0]], [za]))
+                                S_r = np.squeeze(sens.get([resp], [mat], [nm[0]], [za]), group_order="ascending")
                             else:
                                 S_r = np.zeros((sens.n_groups, ))
 
                             if exist2:
-                                S_l = np.squeeze(sens2.get([resp], [mat2], [nm[1]], [za]))
+                                S_l = np.squeeze(sens2.get([resp], [mat2], [nm[1]], [za]), group_order="ascending")
                             else:
                                 S_l = np.zeros((sens.n_groups, ))
 

@@ -156,7 +156,7 @@ class Sensitivity:
             raise SensitivityError(f"serpentTools.parsers.sensitivity.energies must be a np.array, not of type {type(sens.energies)}."
                                     "The structure of serpentTools.parsers.sensitivity object might have changed!")
         else:
-            self.group_structure = sens.energies[::-1]
+            self.group_structure = sens.energies
 
     def from_eranos(self):
         """
@@ -168,9 +168,9 @@ class Sensitivity:
             If the file format or structure is not as expected.
         """
         if 'eranos33' in self.filepath.suffix:
-            energy_grid = utils.ECCO33[::-1]
+            energy_grid = utils.ECCO33
         elif 'eranos1968' in self.filepath.suffix:
-            energy_grid = utils.ECCO1968[::-1]
+            energy_grid = utils.ECCO1968
         else:
             raise SensitivityError(f"Cannot read file format {self.filepath.name}")
 
@@ -882,7 +882,7 @@ class Sensitivity:
 
         self._sens_rsd = sens_rsd
 
-    def get(self, resp=None, mat=None, MT=None, za=None, g=None, group_order='legacy'):
+    def get(self, resp=None, mat=None, MT=None, za=None, g=None, group_order='descending'):
         """
         Extract sensitivity profiles and uncertainties for specified parameters.
 
@@ -998,7 +998,7 @@ class Sensitivity:
         # --- get group indexes
         if g is not None:
             if isinstance(g, int):
-                if group_order == 'inverse':
+                if group_order == 'ascending':
                     iG = [self._groups - 1]
                 else:
                     iG = [g - 1]
@@ -1006,7 +1006,7 @@ class Sensitivity:
                 raise ValueError(f"'g' must be of type int or list, not of type {type(g)}")
         else:
             iG = [ig for ig in range(len(self.group_structure) - 1)]
-            if group_order == 'inverse':
+            if group_order == 'ascending':
                 iG = iG[::-1]
 
         # --- get sensitivity vector and uncertainty
