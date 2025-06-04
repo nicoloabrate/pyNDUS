@@ -666,7 +666,7 @@ class Sandwich:
                                 S_avg_l, S_rsd_l = sens2.get(resp=[resp], mat=[mat2], MT=[mt], za=[za], group_order="ascending")
                             else:
                                 S_avg_l = np.zeros((sens.n_groups, ))
-                                S_rsd_r = None
+                                S_rsd_l = None
 
                             if S_rsd_r is not None:
                                 S_r = utils.np2unp(np.squeeze(S_avg_r), sigma * np.squeeze(S_rsd_r))
