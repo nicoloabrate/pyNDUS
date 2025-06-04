@@ -769,7 +769,7 @@ class Sandwich:
 
         df = pd.DataFrame(records, columns=["RESPONSE", "ZA", "MT_row", "MT_col", "value"])
         df.set_index(["RESPONSE", "ZA", "MT_row", "MT_col"], inplace=True)
-        df_matrix = df["value"].unstack("MT_col")
+        df_matrix = df["value"].unstack("MT_col").fillna(0)
 
         for resp in list_resp:
             val1 = unc1.loc[(resp, mat)].sum().sum()
