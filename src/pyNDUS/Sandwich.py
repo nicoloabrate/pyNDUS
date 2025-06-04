@@ -13,6 +13,7 @@ from uncertainties import ufloat
 from uncertainties import unumpy as unp
 from collections import OrderedDict
 from itertools import permutations
+from copy import deepcopy as copy
 try:
     import pyNDUS.Sensitivity as Sensitivity
     import pyNDUS.GetCovariance as GetCovariance
@@ -144,6 +145,8 @@ class Sandwich:
             list_za = list(sens.zaid.keys())
             if sens2 is not None:
                 list_za += list(sens2.zaid.keys())
+            # if is_covmat:
+            #     list_za += list(covmat.keys())
             list_za = list(set(list_za))
         elif isinstance(list_za, str):
             if list_za not in sens.zais.keys():
@@ -224,15 +227,15 @@ class Sandwich:
             # --- get MTs in covariance
             if is_covmat:
                 if za in covmat.keys():
-                    map_MF2MT[za] = covmat[za].MFs2MTs
+                    map_MF2MT[za] = copy(covmat[za].MFs2MTs)
                 else:
                     map_MF2MT[za] = {}
                     map_MF2MT[za]["errorr33"] = []
 
             # --- get MTs in sensitivity
-            sens_MTs[za] = list(sens.MTs.values())
+            sens_MTs[za] = list(sens.MTs.keys())
             if sens2 is not None:
-                sens_MTs[za] += list(sens2.MTs.values())
+                sens_MTs[za] += list(sens2.MTs.keys())
                 sens_MTs[za] = list(set(sens_MTs[za]))
 
             # --- enforce consistency between covariance (if any) and sensitivities 
@@ -246,12 +249,6 @@ class Sandwich:
                 if get_MTs:
                     intersection = list(set(covMTs) & set(sens_MTs[za]))
                     intersection.sort()
-                    # remove total XS to avoid double counting the profiles
-                    if 1 in intersection:
-                        if len(intersection) > 2:
-                            intersection.remove(1)
-                        elif max(intersection) < 110 and len(intersection) == 2:
-                            intersection.remove(1)
 
                     sens_MTs[za] = intersection.copy()
                     if za in za_dict.keys():
@@ -259,6 +256,22 @@ class Sandwich:
                             self.MTs[za] = intersection.copy()
                         else:
                             self.MTs[za] = intersection
+
+                        if 1 in self.MTs[za]:
+                            if len(self.MTs[za]) > 2:
+                                self.MTs[za].remove(1)
+                            elif max(self.MTs[za]) < 110 and len(self.MTs[za]) == 2:
+                                self.MTs[za].remove(1)
+                        # remove MF=31 (452) from serpent sensitivities to avoid double counting the profiles
+                        if sens.reader == 'serpent':
+                            if 452 in self.MTs[za]:
+                                if 455 in self.MTs[za] and 456 in self.MTs[za]:
+                                    self.MTs[za].remove(452)
+                        if sens2 is not None:
+                            if sens2.reader == 'serpent':
+                                if 452 in self.MTs[za]:
+                                    if 455 in self.MTs[za] and 456 in self.MTs[za]:
+                                        self.MTs[za].remove(452)
 
                         for mf in map_MF2MT[za].keys():
                             map_MF2MT[za][mf] = []
@@ -268,22 +281,37 @@ class Sandwich:
                             map_MF2MT[za][mf].append(mt)
 
                 else:
-                    if not representativity:
-                        intersection = list(set(list_MTs) & set(sens_MTs[za]) & set(covMTs))
-                        intersection.sort()
-                        sens_MTs[za] = intersection.copy()
-                    else:
-                        sens_MTs[za] = list(set(list_MTs + sens_MTs[za] + covMTs))
+
+                    intersection = list(set(list_MTs) & set(covMTs) & set(sens_MTs[za]))
+                    intersection.sort()
+                    sens_MTs[za] = intersection.copy()
+
                     if za in za_dict.keys():
                         self.MTs[za] = intersection.copy()
 
-                        if za in map_MF2MT.keys():
-                            for mf in map_MF2MT[za].keys():
-                                map_MF2MT[za][mf] = []
+                        if 1 in self.MTs[za]:
+                            if len(self.MTs[za]) > 2:
+                                self.MTs[za].remove(1)
+                            elif max(self.MTs[za]) < 110 and len(self.MTs[za]) == 2:
+                                self.MTs[za].remove(1)
+                        # remove MF=31 (452) from serpent sensitivities to avoid double counting the profiles
+                        if sens.reader == 'serpent':
+                            if 452 in self.MTs[za]:
+                                if 455 in self.MTs[za] and 456 in self.MTs[za]:
+                                    self.MTs[za].remove(452)
+                        if sens2 is not None:
+                            if sens2.reader == 'serpent':
+                                if 452 in self.MTs[za]:
+                                    if 455 in self.MTs[za] and 456 in self.MTs[za]:
+                                        self.MTs[za].remove(452)
 
-                        for mt in intersection:
-                            mf = f"errorr{MT2MF[mt]}"
-                            map_MF2MT[za][mf].append(mt)
+                    if za in map_MF2MT.keys():
+                        for mf in map_MF2MT[za].keys():
+                            map_MF2MT[za][mf] = []
+
+                    for mt in intersection:
+                        mf = f"errorr{MT2MF[mt]}"
+                        map_MF2MT[za][mf].append(mt)
 
             else:
                 if get_MTs:
@@ -311,6 +339,23 @@ class Sandwich:
                     sens_MTs[za] = intersection.copy()
                     if za in za_dict.keys():
                         self.MTs[za] = intersection.copy()
+
+                        if 1 in self.MTs[za]:
+                            if len(self.MTs[za]) > 2:
+                                self.MTs[za].remove(1)
+                            elif max(self.MTs[za]) < 110 and len(self.MTs[za]) == 2:
+                                self.MTs[za].remove(1)
+                        # remove MF=31 (452) from serpent sensitivities to avoid double counting the profiles
+                        if sens.reader == 'serpent':
+                            if 452 in self.MTs[za]:
+                                if 455 in self.MTs[za] and 456 in self.MTs[za]:
+                                    self.MTs[za].remove(452)
+                        if sens2 is not None:
+                            if sens2.reader == 'serpent':
+                                if 452 in self.MTs[za]:
+                                    if 455 in self.MTs[za] and 456 in self.MTs[za]:
+                                        self.MTs[za].remove(452)
+
         if len(za_dict) == 0:
             raise SandwichError("No valid ZAIDs found. Check that there is a non-null intersection between ZAIDs provided in the sensitivity and covariance (if any) objects.")
         else:
