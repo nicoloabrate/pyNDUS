@@ -756,7 +756,7 @@ class GetCovariance():
             f.write(f"PYTHON VERSION: {sys.version} \n")
             f.write(f"SANDY VERSION: {sandy_ver} \n")
             f.write(f"NJOY VERSION: {njoy_ver} \n")
-            f.write(f"NJOY PATH: {os.environ["NJOY"]} \n")
+            f.write(f"NJOY PATH: {os.environ['NJOY']} \n")
             f.write(f"DDYYMMHH: {mmddyyhh} \n")
             f.write(f"{sep}")
 
