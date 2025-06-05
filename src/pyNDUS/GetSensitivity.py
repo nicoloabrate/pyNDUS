@@ -640,9 +640,9 @@ class Sensitivity:
             elif "nubar" in mt:
                 if mt == 'nubar total':
                     MTs[452] = imt
-                elif mt == 'nubar prompt':
-                    MTs[455] = imt
                 elif mt == 'nubar delayed':
+                    MTs[455] = imt
+                elif mt == 'nubar prompt':
                     MTs[456] = imt
             else:
                 # TODO FIXME define an MT number for fission emission spectra
