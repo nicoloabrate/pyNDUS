@@ -704,7 +704,7 @@ class GetCovariance():
                 # Call the method that produces output
                 errorr = endf6_tape.get_errorr(
                     groupr_kws=dict(ek=group_structure),
-                    errorr_kws=dict(ek=group_structure),
+                    errorr_kws=dict(ek=group_structure, irespr=irespr),
                     verbose=False,
                     temperature=temperature
                 )
