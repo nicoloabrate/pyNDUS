@@ -521,7 +521,7 @@ class Sandwich:
 
                             else:
                                 if exist:
-                                    S = np.squeeze(sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za]), group_order="ascending")
+                                    S = np.squeeze(sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za], group_order="ascending"))
                                 else:
                                     S = np.zeros((sens.n_groups, ))
                             # get covariance matrix
@@ -571,12 +571,12 @@ class Sandwich:
                                     S_l = np.squeeze(S_avg_l)
                             else:
                                 if exist:
-                                    S_r = np.squeeze(sens.get([resp], [mat], [nm[0]], [za]), group_order="ascending")
+                                    S_r = np.squeeze(sens.get([resp], [mat], [nm[0]], [za], group_order="ascending"))
                                 else:
                                     S_r = np.zeros((sens.n_groups, ))
 
                                 if exist2:
-                                    S_l = np.squeeze(sens.get([resp], [mat], [nm[1]], [za]), group_order="ascending")
+                                    S_l = np.squeeze(sens.get([resp], [mat], [nm[1]], [za], group_order="ascending"))
                                 else:
                                     S_l = np.zeros((sens.n_groups, ))
 
@@ -680,12 +680,12 @@ class Sandwich:
 
                         else:
                             if exist:
-                                S_r = np.squeeze(sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za]), group_order="ascending")
+                                S_r = np.squeeze(sens.get(resp=[resp], mat=[mat], MT=[mt], za=[za], group_order="ascending"))
                             else:
                                 S_r = np.zeros((sens.n_groups, ))
 
                             if exist2:
-                                S_l = np.squeeze(sens2.get(resp=[resp], mat=[mat2], MT=[mt], za=[za]), group_order="ascending")
+                                S_l = np.squeeze(sens2.get(resp=[resp], mat=[mat2], MT=[mt], za=[za], group_order="ascending"))
                             else:
                                 S_l = np.zeros((sens.n_groups, ))
 
@@ -732,12 +732,12 @@ class Sandwich:
                                 S_l = np.squeeze(S_avg_l)
                         else:
                             if exist:
-                                S_r = np.squeeze(sens.get([resp], [mat], [nm[0]], [za]), group_order="ascending")
+                                S_r = np.squeeze(sens.get([resp], [mat], [nm[0]], [za], group_order="ascending"))
                             else:
                                 S_r = np.zeros((sens.n_groups, ))
 
                             if exist2:
-                                S_l = np.squeeze(sens2.get([resp], [mat2], [nm[1]], [za]), group_order="ascending")
+                                S_l = np.squeeze(sens2.get([resp], [mat2], [nm[1]], [za], group_order="ascending"))
                             else:
                                 S_l = np.zeros((sens.n_groups, ))
 
