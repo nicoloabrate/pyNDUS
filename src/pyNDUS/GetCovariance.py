@@ -678,7 +678,7 @@ class GetCovariance():
         else:
             irespr = 0
 
-        njoy_inp = endf6_tape.get_errorr(groupr_kws=dict(ek=group_structure, irespr=irespr), errorr_kws=dict(ek=group_structure), 
+        njoy_inp = endf6_tape.get_errorr(groupr_kws=dict(ek=group_structure), errorr_kws=dict(ek=group_structure, irespr=irespr), 
                                          dryrun=True, temperature=temperature)
 
         base_path = errorr_path.parent.parent
