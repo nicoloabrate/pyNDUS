@@ -162,7 +162,7 @@ def uncformat(data, std, fmtn=":.2u%S", fmts=None):
 
 
 ECCO33 = np.array([
-    1.00001e-05,
+    1.00000e-05,
     1.00000e-01,
     5.40000e-01,
     4.00000e+00,
