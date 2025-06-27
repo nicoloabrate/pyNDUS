@@ -699,6 +699,66 @@ class Sensitivity:
             raise ValueError("Group structure is not defined, cannot get number of groups.")
 
     @property
+    def n_resp(self):
+        """
+        Number of responses.
+
+        Returns
+        -------
+        int
+            Number of responses.
+        """
+        if hasattr(self, 'responses'):
+            return len(self.responses)
+        else:
+            raise ValueError("'responses' attribute is not defined, cannot get number of responses 'n_resp'.")
+
+    @property
+    def n_mat(self):
+        """
+        Number of materials.
+
+        Returns
+        -------
+        int
+            Number of materials.
+        """
+        if hasattr(self, 'materials'):
+            return len(self.materials)
+        else:
+            raise ValueError("'materials' attribute is not defined, cannot get number of materials 'n_mat'.")
+
+    @property
+    def n_zai(self):
+        """
+        Number of isotopes.
+
+        Returns
+        -------
+        int
+            Number of isotopes.
+        """
+        if hasattr(self, 'zaid'):
+            return len(self.zaid)
+        else:
+            raise ValueError("'zaid' attribute is not defined, cannot get number of isotopes 'n_zai'.")
+
+    @property
+    def n_MTs(self):
+        """
+        Number of MTs.
+
+        Returns
+        -------
+        int
+            Number of MTs.
+        """
+        if hasattr(self, 'MTs'):
+            return len(self.MTs)
+        else:
+            raise ValueError("'MTs' attribute is not defined, cannot get number of responses 'n_MTs'.")
+
+    @property
     def sens(self):
         """
         Sensitivity profiles.
@@ -1016,6 +1076,101 @@ class Sensitivity:
             return S_avg, S_rsd
         else:
             return S_avg
+
+
+    def collapse(self, fewgrp, weight=None, egridname=None):
+        """Collapse in energy the sensitivity coefficient.
+
+        Parameters
+        ----------
+        fewgrp : iterable
+            Few-group structure to perform the collapsing, in MeV.
+        weight: array, optional
+            Weighting function to perform the energy collapsing, by default ``None``.
+        egridname: str, optional
+            Name of the energy grid, by default ``None``.
+
+        Raises
+        ------
+        OSError
+            Collapsing failed: weighting flux missing in {}.
+
+        Returns
+        -------
+        None.
+
+        """
+        if weight is None:
+            weight = np.ones((self.n_groups))
+
+        if len(weight) != self.n_groups:
+            raise SensitivityError(f"len of the weighting function, {len(weight)} not consistent with the number of groups in sensitivities {self.n_groups}")
+
+        multigrp = self.group_structure
+
+        if isinstance(fewgrp, list):
+            fewgrp = np.asarray(fewgrp)
+
+        # ensure ascending order
+        fewgrp = sorted(fewgrp)
+        H = len(multigrp)-1
+        G = len(fewgrp)-1
+        # sanity checks
+        if G >= H:
+            raise SensitivityError(f'Collapsing failed: few-group structure should ',
+                                   f' have less than {H} group')
+        if multigrp[0] != fewgrp[0] or multigrp[-1] != fewgrp[-1]:
+            raise SensitivityError('Collapsing failed: few-group structure '
+                                   'boundaries do not match with multi-group one:'
+                                   f'multi_group lower bound: {multigrp[0]}, few_group lower bound: {fewgrp[0]} ',
+                                   f'multi_group lower bound: {multigrp[-1]}, few_group lower bound: {fewgrp[-1]}')
+        # map fewgroup onto multigroup
+        few_into_multigrp = np.zeros((G + 1,), dtype=int)
+        # multigrp_bin = np.zeros((H+1,), dtype=int)
+        for ig, g in enumerate(fewgrp):
+            reldiff = abs(multigrp-g)/g
+            idx = np.argmin(reldiff)
+            if (reldiff[idx] > 1E-5):
+                raise SensitivityError(f'Group boundary n.{ig}, {g} MeV not present in fine grid!')
+            else:
+                few_into_multigrp[ig] = idx
+
+        dims = (self.n_resp, self.n_mat, self.n_zai, self.n_MTs, len(fewgrp) - 1)
+
+        collapsed_sens = np.zeros(dims)
+        if self.sens_rsd is not None:
+            collapsed_sens_rsd = np.zeros(dims)
+
+        for ig in range(G):
+            # select fine groups in g
+            G1, G2 = fewgrp[ig], fewgrp[ig+1]
+            iS = few_into_multigrp[ig]
+            iE = few_into_multigrp[ig+1]
+            # --- collapse
+            for iresp in range(self.n_resp):
+                for imat in range(self.n_mat):
+                    for izai in range(self.n_zai):
+                        for iMT in range(self.n_MTs):
+                            if self.sens_rsd is None:
+                                sensitivity = self.sens[iresp, imat, izai, iMT, :]
+                            else:
+                                S_avg = self.sens[iresp, imat, izai, iMT, :]
+                                S_rsd = self.sens_rsd[iresp, imat, izai, iMT, :]
+                                sensitivity = utils.np2unp(S_avg, 2 * S_rsd)
+
+                            collapsed_values = weight[iS:iE].dot(sensitivity[iS:iE]) # np.divide(, NC, where=NC!=0)
+                            collapsed_sens[iresp, imat, izai, iMT, ig] = collapsed_values.n
+                            collapsed_sens_rsd[iresp, imat, izai, iMT, ig] = collapsed_values.s / collapsed_values.n if collapsed_values.n != 0 else 0.0
+
+        # update attributes data
+        self._sens = collapsed_sens
+        if self.sens_rsd is not None:
+            self._sens_rsd = collapsed_sens_rsd
+
+        self.fine_energygrid = self.group_structure
+        self.group_structure = fewgrp
+        self.egridname = egridname if egridname else f'{G}G'
+
 
 class SensitivityError(Exception):
     pass
