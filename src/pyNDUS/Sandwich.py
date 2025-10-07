@@ -755,10 +755,12 @@ class Sandwich:
                             output[resp][za][nm] = 0
 
         # --- get normalisation coefficients
+        za_dict_1 = dict(zip(sens.zaid.keys(), sens.zais.keys()))
         unc1, dict_map1 = Sandwich.compute_uncertainty(sens, covmat, list_resp, [mat], map_MF2MT,
-                                                        sens.zais, sens_MC, sigma=sigma)
+                                                        za_dict_1, sens_MC, sigma=sigma)
+        za_dict_2 = dict(zip(sens2.zaid.keys(), sens2.zais.keys()))
         unc2, dict_map2 = Sandwich.compute_uncertainty(sens2, covmat, list_resp, [mat2], map_MF2MT,
-                                                        sens2.zais, sens_MC, sigma=sigma)
+                                                        za_dict_2, sens_MC, sigma=sigma)
 
         # --- assign normalised output and convert in pandas.DataFrame
         records = []
