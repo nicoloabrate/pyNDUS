@@ -86,7 +86,8 @@ class GetCovariance():
         - MF=33 for cross sections
     """
     def __init__(self, zaid, temperature=300, group_structure=None, egridname=None,
-                 lib="endfb_80", process_resonances=True, author=None, njoy_ver=None, cwd=None):
+                 lib="endfb_80", process_resonances=True, author=None, njoy_ver=None, 
+                 database=False, cwd=None):
         """
         Initialize the GetCovariance object, create necessary directories, and extract covariance matrices.
 
@@ -108,6 +109,8 @@ class GetCovariance():
             Author name for logging.
         njoy_ver : str, optional
             NJOY version for logging.
+        database : logical, optional
+            Flag for using a database storing the covariance matrices.
         cwd : str or pathlib.Path, optional
             Working directory for storing files.
         """
@@ -130,49 +133,68 @@ class GetCovariance():
         elif not isinstance(njoy_ver, str):
             raise ValueError(f"njoy_ver arg must be of type str, not of type {type(njoy_ver)}")
 
-        # --- create directories
-        if not Path.exists(self.path.joinpath(lib)):
-            os.mkdir(self.path.joinpath(lib))
 
-        cwd = self.path.joinpath(lib)
+        if database:
+            # --- create directories
+            if not Path.exists(self.path.joinpath(lib)):
+                os.mkdir(self.path.joinpath(lib))
 
-        # --- create folder for ENDF-6 formatted files
-        subdir = 'endf6'
+            cwd = self.path.joinpath(lib)
 
-        if not Path.exists(cwd.joinpath(subdir)):
-            os.mkdir(cwd.joinpath(subdir))
+            # --- create folder for ENDF-6 formatted files
+            subdir = 'endf6'
 
-        e6dir = cwd.joinpath(subdir)
-
-        if not Path.exists(cwd.joinpath(egridname)):
-            os.mkdir(cwd.joinpath(egridname))
-
-        cwd = cwd.joinpath(egridname)
-
-        # --- create folder for ERRORR formatted files
-        for subdir in ['errorr']:
             if not Path.exists(cwd.joinpath(subdir)):
                 os.mkdir(cwd.joinpath(subdir))
 
-        # --- get ENDF-6 formatted tape
-        endf6_name = f'{self.zais}.endf'
-        endf6_path = e6dir.joinpath(endf6_name)
+            e6dir = cwd.joinpath(subdir)
 
-        if Path.exists(endf6_path):
-            endf6_tape = sandy.Endf6.from_file(endf6_path)
-            run_errorr = False
+            if not Path.exists(cwd.joinpath(egridname)):
+                os.mkdir(cwd.joinpath(egridname))
+
+            cwd = cwd.joinpath(egridname)
+
+            # --- create folder for ERRORR formatted files
+            for subdir in ['errorr']:
+                if not Path.exists(cwd.joinpath(subdir)):
+                    os.mkdir(cwd.joinpath(subdir))
+
+            # --- get ENDF-6 formatted tape
+            endf6_name = f'{self.zais}.endf'
+            endf6_path = e6dir.joinpath(endf6_name)
+
+            if Path.exists(endf6_path):
+                endf6_tape = sandy.Endf6.from_file(endf6_path)
+                run_errorr = False
+            else:
+                endf6_tape = sandy.get_endf6_file(lib, "xs", zaid)
+                endf6_tape.to_file(endf6_path)
+                run_errorr = True
+
+            # --- get covariance matrix
+            errorr_name = f'{self.zais}_{temperature:g}K.errorr'
+            errorr_exists = False
+            for mf in [31, 33, 34, 35]:
+                if Path.exists(cwd.joinpath('errorr', f"{errorr_name}{mf}")):
+                    errorr_exists = True
+                    break
+
+            if not errorr_exists or run_errorr:
+                errorr_path = cwd.joinpath('errorr', f"{errorr_name}")
+                errorr_out = GetCovariance.sandy_calls_errorr(endf6_tape, zaid, temperature,
+                                                            group_structure, egridname,
+                                                            errorr_path, process_resonances,
+                                                            lib, author, njoy_ver)
+
         else:
-            endf6_tape = sandy.get_endf6_file(lib, "xs", zaid)
-            endf6_tape.to_file(endf6_path)
-            run_errorr = True
-
-        # --- get covariance matrix
-        errorr_name = f'{self.zais}_{temperature:g}K.errorr'
-        errorr_exists = False
-        for mf in [31, 33, 34, 35]:
-            if Path.exists(cwd.joinpath('errorr', f"{errorr_name}{mf}")):
-                errorr_exists = True
-                break
+            self.path = Path(cwd)
+            run_errorr = False
+            errorr_name = f'{self.zais}_{temperature:g}K.errorr'
+            errorr_exists = False
+            for mf in [31, 33, 34, 35]:
+                if Path.exists(cwd.joinpath(f"{errorr_name}{mf}")):
+                    errorr_exists = True
+                    break
 
         if errorr_exists and not run_errorr:
             errorr_out = {}
@@ -180,12 +202,6 @@ class GetCovariance():
                 if cwd.joinpath('errorr', f"{errorr_name}{mf}").exists():
                     errorr_path = cwd.joinpath('errorr', f"{errorr_name}{mf}")
                     errorr_out[f"errorr{mf}"] = sandy.Errorr.from_file(errorr_path)
-        else:
-            errorr_path = cwd.joinpath('errorr', f"{errorr_name}")
-            errorr_out = GetCovariance.sandy_calls_errorr(endf6_tape, zaid, temperature,
-                                                          group_structure, egridname,
-                                                          errorr_path, process_resonances,
-                                                          lib, author, njoy_ver)
 
         self.MFs2MTs = errorr_out
         self.mat = errorr_out
@@ -393,6 +409,9 @@ class GetCovariance():
             self._path = cwd
         else:
             raise ValueError(f"Expected 'str' or 'Path' types instead of type {type(cwd)} for arg 'cwd'")
+
+        if not Path.exists(self._path):
+            raise ValueError(f"Provided path {self._path} does not exist!")
 
     @property
     def zais(self):
