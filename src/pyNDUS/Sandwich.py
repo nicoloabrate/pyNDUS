@@ -410,6 +410,19 @@ class Sandwich:
         self._za = value
 
     @staticmethod
+    def _fallback_cov(n_groups: int, rsd: float, mt1: int, mt2: int, corr: float = 0.0):
+        """
+        Build a fallback relative covariance matrix for missing data.
+        - Diagonal (mt1==mt2): variance = rsd^2 on the diagonal (scaled by I)
+        - Off-diagonal: corr * rsd^2 on the diagonal (default corr=0 -> zeros)
+        """
+        var = float(rsd) ** 2
+        if mt1 == mt2:
+            return var * np.eye(n_groups)
+        else:
+            return float(corr) * var * np.eye(n_groups)
+
+    @staticmethod
     def compute_similarity(sens, sens2, list_resp, list_MTs, za_dict, sens_MC, sigma=None):
 
         if sens.reader == 'serpent':
@@ -538,7 +551,8 @@ class Sandwich:
 
     @staticmethod
     def compute_uncertainty(sens, covmat, list_resp, list_mat, map_MF2MT,
-                            za_dict, sens_MC, sigma=None):
+                            za_dict, sens_MC, sigma=None,
+                            missing_cov="zero", missing_cov_rsd=0.20, missing_cov_corr=0.0):
         # --- apply sandwich rule
         output = {}
         dict_map = {}
@@ -604,11 +618,28 @@ class Sandwich:
                             # apply sandwich rule
                             if cov_df is not None:
                                 if exist:
-                                    output[resp][mat][za][(mt, mt)] = np.dot(S.T, np.dot(C, S)) 
+                                    output[resp][mat][za][(mt, mt)] = np.dot(S.T, np.dot(C, S))
                                 else:
                                     output[resp][mat][za][(mt, mt)] = 0
                             else:
-                                output[resp][mat][za][(mt, mt)] = 0
+                                if missing_cov == "zero":
+                                    output[resp][mat][za][(mt, mt)] = 0
+                                elif missing_cov == "raise":
+                                    raise ValueError(
+                                        f"Missing covariance for ZA={za}, MF={mf}, MT={mt} (diag). "
+                                        f"resp={resp}, mat={mat}"
+                                    )
+                                elif missing_cov == "assume":
+                                    if exist:
+                                        C_fb = Sandwich._fallback_cov(
+                                            sens.n_groups, missing_cov_rsd, mt, mt, corr=missing_cov_corr
+                                        )
+                                        output[resp][mat][za][(mt, mt)] = np.dot(S.T, np.dot(C_fb, S))
+                                    else:
+                                        output[resp][mat][za][(mt, mt)] = 0
+                                else:
+                                    raise ValueError(f"Invalid missing_cov policy: {missing_cov}")
+
 
                         # --- covariances
                         cov_combos = list(permutations(map_MF2MT[za][mf], 2))
@@ -654,13 +685,36 @@ class Sandwich:
                                     S_l = np.zeros((sens.n_groups, ))
 
                             # apply sandwich rule
+                            # if cov_df is not None:
+                            #     if exist and exist2:
+                            #         output[resp][mat][za][nm] = np.dot(S_r.T, np.dot(C, S_l))
+                            #     else:
+                            #         output[resp][mat][za][nm] = 0
+                            # else:
+                            #     output[resp][mat][za][nm] = 0
                             if cov_df is not None:
                                 if exist and exist2:
                                     output[resp][mat][za][nm] = np.dot(S_r.T, np.dot(C, S_l))
                                 else:
                                     output[resp][mat][za][nm] = 0
                             else:
-                                output[resp][mat][za][nm] = 0
+                                if missing_cov == "zero":
+                                    output[resp][mat][za][nm] = 0
+                                elif missing_cov == "raise":
+                                    raise ValueError(
+                                        f"Missing covariance for ZA={za}, MF={mf}, MTs={nm} (off-diag). "
+                                        f"resp={resp}, mat={mat}"
+                                    )
+                                elif missing_cov == "assume":
+                                    if exist and exist2:
+                                        C_fb = Sandwich._fallback_cov(
+                                            sens.n_groups, missing_cov_rsd, nm[0], nm[1], corr=missing_cov_corr
+                                        )
+                                        output[resp][mat][za][nm] = np.dot(S_r.T, np.dot(C_fb, S_l))
+                                    else:
+                                        output[resp][mat][za][nm] = 0
+                                else:
+                                    raise ValueError(f"Invalid missing_cov policy: {missing_cov}")
 
         # --- convert in pandas.DataFrame
         records = []
@@ -680,7 +734,9 @@ class Sandwich:
 
     @staticmethod
     def compute_representativity(sens, sens2, covmat, list_resp, map_MF2MT,
-                                  za_dict, sens_MC, sigma=None):
+                                  za_dict, sens_MC, sigma=None, missing_cov="zero",
+                                  missing_cov_rsd=0.20,
+                                  missing_cov_corr=0.0):
 
         if sens.reader == 'serpent':
             mat = 'total'
@@ -773,7 +829,29 @@ class Sandwich:
                             else:
                                 output[resp][za][(mt, mt)] = 0
                         else:
-                            output[resp][za][(mt, mt)] = 0
+                            if missing_cov == "zero":
+                                output[resp][za][(mt, mt)] = 0
+
+                            elif missing_cov == "raise":
+                                raise ValueError(
+                                    f"Missing covariance for ZA={za}, MF={mf}, MT={mt} "
+                                    f"(resp={resp})"
+                                )
+
+                            elif missing_cov == "assume":
+                                if exist and exist2:
+                                    C_fb = Sandwich._fallback_cov(
+                                        sens.n_groups,
+                                        missing_cov_rsd,
+                                        mt, mt,
+                                        corr=missing_cov_corr
+                                    )
+                                    output[resp][za][(mt, mt)] = np.dot(S_r.T, np.dot(C_fb, S_l))
+                                else:
+                                    output[resp][za][(mt, mt)] = 0
+
+                            else:
+                                raise ValueError(f"Invalid missing_cov policy: {missing_cov}")
 
                     # --- covariances
                     cov_combos = list(permutations(map_MF2MT[za][mf], 2))
@@ -825,15 +903,43 @@ class Sandwich:
                             else:
                                 output[resp][za][nm] = 0
                         else:
-                            output[resp][za][nm] = 0
+                            if missing_cov == "zero":
+                                output[resp][za][nm] = 0
+
+                            elif missing_cov == "raise":
+                                raise ValueError(
+                                    f"Missing covariance for ZA={za}, MF={mf}, MTs={nm} "
+                                    f"(resp={resp})"
+                                )
+
+                            elif missing_cov == "assume":
+                                if exist and exist2:
+                                    C_fb = Sandwich._fallback_cov(
+                                        sens.n_groups,
+                                        missing_cov_rsd,
+                                        nm[0], nm[1],
+                                        corr=missing_cov_corr
+                                    )
+                                    output[resp][za][nm] = np.dot(S_r.T, np.dot(C_fb, S_l))
+                                else:
+                                    output[resp][za][nm] = 0
+
+                            else:
+                                raise ValueError(f"Invalid missing_cov policy: {missing_cov}")
 
         # --- get normalisation coefficients
         za_dict_1 = dict(zip(sens.zaid.keys(), sens.zais.keys()))
         unc1, dict_map1 = Sandwich.compute_uncertainty(sens, covmat, list_resp, [mat], map_MF2MT,
-                                                        za_dict_1, sens_MC, sigma=sigma)
+                                                        za_dict_1, sens_MC, sigma=sigma,
+                                                        missing_cov=missing_cov,
+                                                        missing_cov_rsd=missing_cov_rsd,
+                                                        missing_cov_corr=missing_cov_corr)
         za_dict_2 = dict(zip(sens2.zaid.keys(), sens2.zais.keys()))
         unc2, dict_map2 = Sandwich.compute_uncertainty(sens2, covmat, list_resp, [mat2], map_MF2MT,
-                                                        za_dict_2, sens_MC, sigma=sigma)
+                                                        za_dict_2, sens_MC, sigma=sigma,
+                                                        missing_cov=missing_cov,
+                                                        missing_cov_rsd=missing_cov_rsd,
+                                                        missing_cov_corr=missing_cov_corr)
 
         # --- assign normalised output and convert in pandas.DataFrame
         records = []
