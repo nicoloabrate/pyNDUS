@@ -80,7 +80,7 @@ class Sensitivity:
     SensitivityError
         If the file format is not recognized or if the file structure is not as expected.
     """
-    def __init__(self, sensitivity_path):
+    def __init__(self, sensitivity_path, duplicate_policy="raise"):
         """
         Initialize the Sensitivity object and read the sensitivity file.
 
@@ -90,24 +90,28 @@ class Sensitivity:
             Path to the sensitivity file.
             -'serpent': should end with "_sens0.m".
             -'eranos': should end with ".eranos33" or ".eranos1968".
+        duplicate_policy : str, optional
+            Policy for handling duplicate entries in the sensitivity file. Options are:
+            -'raise': raise an error if duplicates are found (default).
+            -'keep_first': keep the first occurrence and ignore subsequent duplicates.
+            -'keep_last': keep the last occurrence and ignore previous duplicates.
         """
         # --- validate and assign path
         self.filepath = sensitivity_path
 
-        # --- read the sensitivity file
-        if "_sens0.m" in self.filepath.name:
-            self.reader = "serpent"
-        elif ".eranos" in self.filepath.name:
-            self.reader = "eranos"
-        else:
-            raise SensitivityError(f"Cannot read file {self.filepath} since it is not produced by Serpent!")
+        # single file
+        if not self.is_multifile:
+            # --- read the sensitivity file
+            self.reader = self.get_reader()
 
-        if self.reader == "serpent":
-            self.from_serpent()
-        elif self.reader == "eranos":
-            self.from_eranos()
+            if self.reader == "serpent":
+                self.from_serpent()
+            elif self.reader == "eranos":
+                self.from_eranos()
+            return
         else:
-            raise SensitivityError(f"Sensitivity reader for {reader} not available!")
+            # multi files
+            self._from_multiple(self.filepath, duplicate_policy=duplicate_policy)
 
     def from_serpent(self):
         """
@@ -347,17 +351,18 @@ class Sensitivity:
         Path
             File path.
         """
+        if hasattr(self, "_filepaths"):
+            return self._filepaths
         return self._filepath
 
     @filepath.setter
     def filepath(self, value):
         """
-        Set the file path for the sensitivity file.
+        Set the file path(s) for the sensitivity file(s).
 
         Parameters
         ----------
-        value : str or Path
-            Path to the sensitivity file.
+        value : str, Path, or list of str/Path
 
         Raises
         ------
@@ -366,15 +371,56 @@ class Sensitivity:
         SensitivityError
             If the file does not exist.
         """
+        # ---- MULTI-FILE CASE ----
+        if isinstance(value, (list, tuple)):
+            paths = []
+            for v in value:
+                if isinstance(v, str):
+                    v = Path(v)
+                elif not isinstance(v, Path):
+                    raise ValueError(
+                        f"All elements must be str or Path, not {type(v)}"
+                                    )
+
+                if not v.exists():
+                    raise SensitivityError(
+                        f"File {v} does not exist, cannot create Sensitivity object."
+                                    )
+
+                paths.append(v)
+
+            if len(paths) == 0:
+                raise SensitivityError("Empty list of sensitivity files.")
+
+            self._filepaths = paths
+
+            # # keep first for backward compatibility ?
+            # self._filepath = paths[0]
+
+            return
+
+        # ---- SINGLE FILE CASE ----
         if isinstance(value, str):
             value = Path(value)
         elif not isinstance(value, Path):
-            raise ValueError(f"Input arg to class Sensitivity must be either str or Path object, not of type {type(value)}")
+            raise ValueError(
+                f"Input arg to class Sensitivity must be either str, Path or list, not {type(value)}"
+                            )
 
         if not value.exists():
-            raise SensitivityError(f"File {value} does not exist, cannot create Sensitivity object.")
+            raise SensitivityError(
+                f"File {value} does not exist, cannot create Sensitivity object."
+                                )
 
         self._filepath = value
+
+        # remove multi-file attribute if switching mode
+        if hasattr(self, "_filepaths"):
+            del self._filepaths
+
+    @property
+    def is_multifile(self):
+        return hasattr(self, "_filepaths")
 
     @property
     def reader(self):
@@ -407,6 +453,27 @@ class Sensitivity:
             self._reader = value
         elif not isinstance(value, str):
             raise ValueError(f"Attribute 'reader' to class Sensitivity must be a str, not of type {type(value)}")
+
+    def get_reader(self):
+        """
+        Determine the reader type based on the file extension.
+
+        Returns
+        -------
+        str
+            Reader type ('serpent' or 'eranos').
+
+        Raises
+        ------
+        SensitivityError
+            If the file format is not recognized.
+        """
+        if self.filepath.suffix == ".m" and self.filepath.stem.endswith("_sens0"):
+            return "serpent"
+        elif self.filepath.suffix in [".eranos33", ".eranos1968"]:
+            return "eranos"
+        else:
+            raise SensitivityError(f"Cannot determine reader type from file extension {self.filepath.suffix}")
 
     @property
     def responses(self):
@@ -628,22 +695,38 @@ class Sensitivity:
             If the input is not iterable or MTs cannot be parsed.
         """
         if not isinstance(value, Iterable):
-            raise ValueError(f"Expected an Iterable instead of type {type(value)} for 'Sensitivity.MTs'")
+            raise ValueError(
+                f"Expected an Iterable instead of type {type(value)} "
+                "for 'Sensitivity.MTs'"
+            )
 
         MTs = OrderedDict()
+
         for imt, mt in enumerate(value):
+            if isinstance(mt, (int, np.integer)):
+                MTs[int(mt)] = imt
+                continue
+
+            if not isinstance(mt, str):
+                raise ValueError(
+                    f"Serpent MT descriptors must be strings or integers, "
+                    f"not {type(mt)}"
+                )
+
             if "xs" in mt:
                 if "total" not in mt:
                     MTs[int(mt.split(" ")[1])] = imt
-                else: # due to Serpent definition for MT1
+                else:
                     MTs[1] = imt
+
             elif "nubar" in mt:
-                if mt == 'nubar total':
+                if mt == "nubar total":
                     MTs[452] = imt
-                elif mt == 'nubar delayed':
+                elif mt == "nubar delayed":
                     MTs[455] = imt
-                elif mt == 'nubar prompt':
+                elif mt == "nubar prompt":
                     MTs[456] = imt
+
             else:
                 # TODO FIXME define an MT number for fission emission spectra
                 MTs[mt] = imt
@@ -1077,7 +1160,6 @@ class Sensitivity:
         else:
             return S_avg
 
-
     def collapse(self, fewgrp, weight=None, egridname=None):
         """Collapse in energy the sensitivity coefficient.
 
@@ -1170,6 +1252,218 @@ class Sensitivity:
         self.fine_energygrid = self.group_structure
         self.group_structure = fewgrp
         self.egridname = egridname if egridname else f'{G}G'
+
+    # @staticmethod
+    # def _normalize_paths(sensitivity_path):
+    #     if isinstance(sensitivity_path, (str, Path)):
+    #         return [Path(sensitivity_path)]
+    #     elif isinstance(sensitivity_path, Iterable):
+    #         paths = [Path(p) if isinstance(p, str) else p for p in sensitivity_path]
+    #         if len(paths) == 0:
+    #             raise SensitivityError("Empty list of sensitivity files.")
+    #         return paths
+    #     else:
+    #         raise ValueError("Invalid sensitivity path provided.")
+
+    def _from_multiple(self, paths, duplicate_policy="raise"):
+        objs = [Sensitivity(p) for p in paths]
+
+        readers = {obj.reader for obj in objs}
+        if len(readers) != 1:
+            raise SensitivityError("Cannot merge sensitivity files from different readers.")
+
+        if readers != {"serpent"}:
+            raise SensitivityError("Merging multiple files is currently supported only for Serpent _sens0.m files.")
+
+        self.reader = "serpent"
+
+        self._check_same_energy_grid(objs)
+
+        self._merge_serpent_sensitivities(objs, duplicate_policy=duplicate_policy)
+
+    @staticmethod
+    def _check_same_energy_grid(objs, rtol=0.0, atol=0.0):
+        ref = objs[0].group_structure
+        for i, obj in enumerate(objs[1:], start=1):
+            if ref.shape != obj.group_structure.shape or not np.allclose(ref, obj.group_structure, rtol=rtol, atol=atol):
+                raise SensitivityError(
+                    f"Inconsistent energy grid between {objs[0].filepath} and {obj.filepath}."
+                                        )
+
+    def _merge_serpent_sensitivities(self, objs, duplicate_policy="raise"):
+        """
+        Merge multiple Serpent Sensitivity objects into one Sensitivity object.
+
+        Parameters
+        ----------
+        objs : list[Sensitivity]
+            Already parsed Sensitivity objects coming from Serpent _sens0.m files.
+        duplicate_policy : str, optional
+            Policy for duplicate entries:
+            - "raise"
+            - "keep_first"
+            - "keep_last"
+
+        Raises
+        ------
+        SensitivityError
+            If readers differ, energy grids differ, or duplicates are found
+            and duplicate_policy="raise".
+        ValueError
+            If duplicate_policy is invalid.
+        """
+        if len(objs) == 0:
+            raise SensitivityError("Cannot merge an empty list of Sensitivity objects.")
+
+        allowed_policies = {"raise", "keep_first", "keep_last"}
+        if duplicate_policy not in allowed_policies:
+            raise ValueError(
+                f"Invalid duplicate_policy: {duplicate_policy}. "
+                f"Allowed values are {sorted(allowed_policies)}."
+            )
+
+        # reader consistency
+        readers = {obj.reader for obj in objs}
+        if readers != {"serpent"}:
+            raise SensitivityError(
+                "Can only merge Sensitivity objects read from Serpent _sens0.m files."
+            )
+
+        # energy-grid consistency
+        self._check_same_energy_grid(objs)
+
+        # ---- union of metadata ----
+        responses = []
+        materials = []
+        zaids = []
+        mts = []
+
+        for obj in objs:
+            for resp in obj.responses:
+                if resp not in responses:
+                    responses.append(resp)
+
+            for mat in obj.materials.keys():
+                if mat not in materials:
+                    materials.append(mat)
+
+            for za in obj.zaid.keys():
+                if za not in zaids:
+                    zaids.append(za)
+
+            for mt in obj.MTs.keys():
+                if mt not in mts:
+                    mts.append(mt)
+
+        ref_grid = np.asarray(objs[0].group_structure)
+        # ---- assign merged metadata using existing setters ----
+        self.reader = "serpent"
+        self.responses = responses
+        self.materials = materials
+        self.zaid = zaids
+        self.zais = self.zaid.keys()
+        self.MTs = mts
+        self.group_structure = ref_grid.copy()
+
+        nResp = len(self.responses)
+        nMat = len(self.materials)
+        nZaid = len(self.zaid)
+        nMTs = len(self.MTs)
+        nE = self.n_groups
+
+        # detect whether any object has rsd
+        rsd_availability = [obj.sens_rsd is not None for obj in objs]
+
+        if any(rsd_availability) and not all(rsd_availability):
+            raise SensitivityError(
+                "Cannot merge Serpent sensitivity objects with inconsistent "
+                "RSD availability."
+            )
+
+        has_rsd = all(rsd_availability)
+
+        merged_avg = np.zeros((nResp, nMat, nZaid, nMTs, nE))
+        merged_rsd = (
+            np.zeros((nResp, nMat, nZaid, nMTs, nE))
+            if has_rsd
+            else None
+        )
+
+        filled = {}
+
+        for obj_idx, obj in enumerate(objs):
+            for resp in obj.responses:
+                for mat in obj.materials:
+                    for za in obj.zaid:
+                        for mt in obj.MTs:
+                            try:
+                                out = obj.get(
+                                    resp=[resp],
+                                    mat=[mat],
+                                    MT=[mt],
+                                    za=[za],
+                                    group_order="descending",
+                                )
+                            except (KeyError, ValueError) as exc:
+                                raise SensitivityError(
+                                    "Could not retrieve sensitivity profile "
+                                    f"(response={resp}, material={mat}, "
+                                    f"ZA={za}, MT={mt}) from {obj.filepath}."
+                                ) from exc
+
+                            if has_rsd:
+                                s_avg, s_rsd = out
+                            else:
+                                s_avg = out
+                                s_rsd = None
+
+                            key = (resp, mat, za, mt)
+
+                            if key in filled:
+                                if duplicate_policy == "raise":
+                                    raise SensitivityError(
+                                        "Duplicate sensitivity profile found for "
+                                        f"(response={resp}, material={mat}, "
+                                        f"ZA={za}, MT={mt}). "
+                                        f"First source: {objs[filled[key]].filepath}; "
+                                        f"second source: {obj.filepath}."
+                                    )
+
+                                if duplicate_policy == "keep_first":
+                                    continue
+
+                                # keep_last: proceed and overwrite
+
+                            iR = self.responses.index(resp)
+                            iM = self.materials[mat]
+                            iZ = self.zaid[za]
+                            iP = self.MTs[mt]
+
+                            avg = np.asarray(s_avg).reshape(-1)
+
+                            if avg.size != nE:
+                                raise SensitivityError(
+                                    f"Sensitivity profile {key} contains {avg.size} "
+                                    f"groups, expected {nE}."
+                                )
+
+                            merged_avg[iR, iM, iZ, iP, :] = avg
+
+                            if has_rsd:
+                                rsd = np.asarray(s_rsd).reshape(-1)
+
+                                if rsd.size != nE:
+                                    raise SensitivityError(
+                                        f"RSD profile {key} contains {rsd.size} "
+                                        f"groups, expected {nE}."
+                                    )
+
+                                merged_rsd[iR, iM, iZ, iP, :] = rsd
+
+                            filled[key] = obj_idx
+
+        self._sens = merged_avg
+        self._sens_rsd = merged_rsd
 
 
 class SensitivityError(Exception):
