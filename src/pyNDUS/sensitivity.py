@@ -1,7 +1,7 @@
 """
 author: N. Abrate.
 
-file: Getensitivity.py
+file: sensitivity.py
 
 description: read sensitivity profiles and construct an object to perform operations.
 """
@@ -12,14 +12,19 @@ from pathlib import Path
 from collections import OrderedDict
 from collections.abc import Iterable
 try:
+    from ._sensitivity_algebra import SensitivityAlgebraMixin
+except ImportError:  # when run as a script
+    from _sensitivity_algebra import SensitivityAlgebraMixin
+try:
     import pyNDUS.utils as utils
-except ModuleNotFoundError: # when run as a script
+except ModuleNotFoundError:  # when run as a script
     try:
         from . import utils
     except ImportError:
         import utils
 
-class Sensitivity:
+
+class Sensitivity(SensitivityAlgebraMixin):
     """
     Class to read, store, and process multi-group sensitivity profiles from Serpent or ERANOS output files.
 
@@ -47,9 +52,10 @@ class Sensitivity:
     MTs : OrderedDict
         Mapping of MT numbers (see ENDF-6 format for the numbers) to their indices.
     group_structure : iterable
-        Energy group structure.
+        Energy group structure, stored in ascending order.
     n_groups : int
-        Number of energy groups.
+        Number of energy groups. Sensitivity arrays are stored in ascending
+        energy order, consistently with ``group_structure``.
     sens : np.ndarray
         Sensitivity profiles whose shape is (nResp, nMat, nZaid, nMTs, nE).
     sens_rsd : np.ndarray
@@ -80,14 +86,16 @@ class Sensitivity:
     SensitivityError
         If the file format is not recognized or if the file structure is not as expected.
     """
+
     def __init__(self, sensitivity_path, duplicate_policy="raise"):
         """
         Initialize the Sensitivity object and read the sensitivity file.
 
         Parameters
         ----------
-        sensitivity_path : str or Path
-            Path to the sensitivity file.
+        sensitivity_path : str, Path, or sequence of str/Path
+            Path to one sensitivity file, or multiple Serpent ``*_sens0.m``
+            files to merge.
             -'serpent': should end with "_sens0.m".
             -'eranos': should end with ".eranos33" or ".eranos1968".
         duplicate_policy : str, optional
@@ -111,7 +119,8 @@ class Sensitivity:
             return
         else:
             # multi files
-            self._from_multiple(self.filepath, duplicate_policy=duplicate_policy)
+            self._from_multiple(self.filepath,
+                                duplicate_policy=duplicate_policy)
 
     def from_serpent(self):
         """
@@ -127,16 +136,22 @@ class Sensitivity:
         try:
             self.responses = list(sens.sensitivities.keys())
         except ValueError:
-            raise SensitivityError("The structure of serpentTools.parsers.sensitivity object might have changed!")
+            raise SensitivityError(
+                "The structure of serpentTools.parsers.sensitivity object might have changed!"
+            )
 
         try:
             self.materials = list(sens.materials.keys())
         except ValueError:
-            raise SensitivityError("The structure of serpentTools.parsers.sensitivity object might have changed!")
+            raise SensitivityError(
+                "The structure of serpentTools.parsers.sensitivity object might have changed!"
+            )
 
         if not isinstance(sens.zais, OrderedDict):
-            raise SensitivityError(f"serpentTools.parsers.sensitivity.zais must be an OrderedDict, not of type {type(sens.zais)}."
-                                    "The structure of serpentTools.parsers.sensitivity object might have changed!")
+            raise SensitivityError(
+                f"serpentTools.parsers.sensitivity.zais must be an OrderedDict, not of type {type(sens.zais)}."
+                "The structure of serpentTools.parsers.sensitivity object might have changed!"
+            )
         else:
             # sens.zais contains integers, not strings
             self.zaid = sens.zais.keys()
@@ -144,22 +159,30 @@ class Sensitivity:
         self.zais = self.zaid.keys()
 
         if not isinstance(sens.perts, OrderedDict):
-            raise SensitivityError(f"serpentTools.parsers.sensitivity.perts must be an OrderedDict, not of type {type(sens.perts)}."
-                                    "The structure of serpentTools.parsers.sensitivity object might have changed!")
+            raise SensitivityError(
+                f"serpentTools.parsers.sensitivity.perts must be an OrderedDict, not of type {type(sens.perts)}."
+                "The structure of serpentTools.parsers.sensitivity object might have changed!"
+            )
         else:
             self.MTs = list(sens.perts.keys())
 
         if not isinstance(sens.sensitivities, dict):
-            raise SensitivityError(f"serpentTools.parsers.sensitivity.sensitivities must be a dict, not of type {type(sens.sensitivities)}."
-                                    "The structure of serpentTools.parsers.sensitivity object might have changed!")
+            raise SensitivityError(
+                "serpentTools.parsers.sensitivity.sensitivities must be a dict, not of type "
+                f"{type(sens.sensitivities)}."
+                "The structure of serpentTools.parsers.sensitivity object might have changed!"
+            )
         else:
             self.sens = sens.sensitivities
             self.sens_rsd = sens.sensitivities
 
         if not isinstance(sens.energies, np.ndarray):
-            raise SensitivityError(f"serpentTools.parsers.sensitivity.energies must be a np.array, not of type {type(sens.energies)}."
-                                    "The structure of serpentTools.parsers.sensitivity object might have changed!")
+            raise SensitivityError(
+                f"serpentTools.parsers.sensitivity.energies must be a np.array, not of type {type(sens.energies)}."
+                "The structure of serpentTools.parsers.sensitivity object might have changed!"
+            )
         else:
+            self.energy_unit = "MeV"
             self.group_structure = sens.energies
 
     def from_eranos(self):
@@ -176,12 +199,13 @@ class Sensitivity:
         elif 'eranos1968' in self.filepath.suffix:
             energy_grid = utils.ECCO1968
         else:
-            raise SensitivityError(f"Cannot read file format {self.filepath.name}")
+            raise SensitivityError(
+                f"Cannot read file format {self.filepath.name}")
 
         nE = len(energy_grid) - 1
-        header_found = False # Flag to activate search of integral parameter
-        material_found = True # Flag to reject repeated table of results for material
-        total_isotopes_found = True # Flag to reject last review
+        header_found = False  # Flag to activate search of integral parameter
+        material_found = True  # Flag to reject repeated table of results for material
+        total_isotopes_found = True  # Flag to reject last review
         reactor_occurrence = 0
         columns = None
         ig = 0
@@ -204,11 +228,18 @@ class Sensitivity:
         iso_pat = re.compile(r'\bISOTOPE\s+(\w+)')
         data_pat = re.compile(r'\bGROUP\s+(\w+)')
 
-        str2MT = OrderedDict({"CAPTURE": 102, "FISSION": 18, "ELASTIC": 2,
-                             "INELASTIC": 4, "N,XN": 106, "NU": 452})
+        str2MT = OrderedDict({
+            "CAPTURE": 102,
+            "FISSION": 18,
+            "ELASTIC": 2,
+            "INELASTIC": 4,
+            "N,XN": 106,
+            "NU": 452
+        })
         MT_str = list(str2MT.keys())
-        MT_int = OrderedDict(zip(str2MT.values(), [i for i in range(len(MT_str))]))
-                # idx_MT_sorted = [2, 3, 1, 0, 4, 5]
+        MT_int = OrderedDict(
+            zip(str2MT.values(), [i for i in range(len(MT_str))]))
+        # idx_MT_sorted = [2, 3, 1, 0, 4, 5]
         MT_sorted = tuple(sorted(MT_int.keys()))
         idx_MT_sorted = []
         for mt in MT_sorted:
@@ -273,11 +304,15 @@ class Sensitivity:
                         perturbations.remove('SUM')
 
                     if columns is None:
-                        num_column = len(perturbations) # len(perturbations) + 2 - (1 if data_line else 0)
+                        num_column = len(
+                            perturbations
+                        )  # len(perturbations) + 2 - (1 if data_line else 0)
                         columns = -np.ones((num_column, nE))
                         if perturbations != MT_str:
-                            raise SensitivityError("The MT order does not match."
-                                                   "The structure of the ERANOS output file might have changed!")
+                            raise SensitivityError(
+                                "The MT order does not match."
+                                "The structure of the ERANOS output file might have changed!"
+                            )
                     iline_data = iline + 1
                     ig = 0
 
@@ -288,21 +323,25 @@ class Sensitivity:
                     parts = line.split()
                     parts = parts[1:num_column + 1]
                     if len(parts) != num_column:
-                        raise ValueError("Inconsistency between N of titles and N of columns")
+                        raise ValueError(
+                            "Inconsistency between N of titles and N of columns"
+                        )
                         continue
                     file_values = np.array([float(val) for val in parts])
                     columns[:, ig] = file_values[idx_MT_sorted]
                     ig += 1
-                
+
                 if ig == nE:
                     dict_read[resp][mat_element][s] = columns.copy()
                     ig = 0
 
         try:
             self.responses = responses
+            self.energy_unit = "eV"
             self.group_structure = energy_grid
         except ValueError:
-            raise SensitivityError("The structure of the ERANOS output file might have changed!")
+            raise SensitivityError(
+                "The structure of the ERANOS output file might have changed!")
 
         # --- get materials, isotopes and reactions
         perturbations = [2, 4, 18, 102, 106, 452]
@@ -312,7 +351,8 @@ class Sensitivity:
             self.zais = self.zaid.keys()
             self.MTs = perturbations
         except ValueError:
-            raise SensitivityError("The structure of the ERANOS output file might have changed!")
+            raise SensitivityError(
+                "The structure of the ERANOS output file might have changed!")
 
         self.sens_rsd = None
         self.sens = dict_read
@@ -334,12 +374,16 @@ class Sensitivity:
         vector : list
             Sensitivity profile per unit lethargy.
         """
-        if len(sens_profile) != (len(energy_vector)-1):
-            ValueError ('Energy grid is not the same')
-        vector = []
-        for i in range(0,len(sens_profile)):
-            vector.append(sens_profile[i]/np.log(energy_vector[i]/energy_vector[i+1]))
-        return vector
+        sens_profile = np.asarray(sens_profile, dtype=float)
+        energy_vector = np.asarray(energy_vector, dtype=float)
+
+        if len(sens_profile) != (len(energy_vector) - 1):
+            raise ValueError('Energy grid is not the same')
+        elif np.any(energy_vector <= 0.0):
+            raise ValueError('Energy grid values must be positive')
+
+        delta_lethargy = np.abs(np.log(energy_vector[1:] / energy_vector[:-1]))
+        return list(sens_profile / delta_lethargy)
 
     @property
     def filepath(self):
@@ -379,13 +423,12 @@ class Sensitivity:
                     v = Path(v)
                 elif not isinstance(v, Path):
                     raise ValueError(
-                        f"All elements must be str or Path, not {type(v)}"
-                                    )
+                        f"All elements must be str or Path, not {type(v)}")
 
                 if not v.exists():
                     raise SensitivityError(
                         f"File {v} does not exist, cannot create Sensitivity object."
-                                    )
+                    )
 
                 paths.append(v)
 
@@ -405,12 +448,12 @@ class Sensitivity:
         elif not isinstance(value, Path):
             raise ValueError(
                 f"Input arg to class Sensitivity must be either str, Path or list, not {type(value)}"
-                            )
+            )
 
         if not value.exists():
             raise SensitivityError(
                 f"File {value} does not exist, cannot create Sensitivity object."
-                                )
+            )
 
         self._filepath = value
 
@@ -420,6 +463,14 @@ class Sensitivity:
 
     @property
     def is_multifile(self):
+        """
+        Whether this object was initialized from multiple sensitivity files.
+
+        Returns
+        -------
+        bool
+            ``True`` when ``filepath`` stores a sequence of paths.
+        """
         return hasattr(self, "_filepaths")
 
     @property
@@ -452,7 +503,9 @@ class Sensitivity:
         if isinstance(value, str):
             self._reader = value
         elif not isinstance(value, str):
-            raise ValueError(f"Attribute 'reader' to class Sensitivity must be a str, not of type {type(value)}")
+            raise ValueError(
+                f"Attribute 'reader' to class Sensitivity must be a str, not of type {type(value)}"
+            )
 
     def get_reader(self):
         """
@@ -468,12 +521,15 @@ class Sensitivity:
         SensitivityError
             If the file format is not recognized.
         """
-        if self.filepath.suffix == ".m" and self.filepath.stem.endswith("_sens0"):
+        if self.filepath.suffix == ".m" and self.filepath.stem.endswith(
+                "_sens0"):
             return "serpent"
         elif self.filepath.suffix in [".eranos33", ".eranos1968"]:
             return "eranos"
         else:
-            raise SensitivityError(f"Cannot determine reader type from file extension {self.filepath.suffix}")
+            raise SensitivityError(
+                f"Cannot determine reader type from file extension {self.filepath.suffix}"
+            )
 
     @property
     def responses(self):
@@ -503,11 +559,13 @@ class Sensitivity:
             If value is not iterable or contains non-string elements.
         """
         if not isinstance(value, Iterable):
-            raise ValueError(f"'responses' must be of type list, not of type {type(value)}")
+            raise ValueError(
+                f"'responses' must be of type list, not of type {type(value)}")
         else:
             for iv, v in enumerate(value):
                 if not isinstance(v, str):
-                    raise ValueError(f"Element n.{iv} of the responses list is not string!")
+                    raise ValueError(
+                        f"Element n.{iv} of the responses list is not string!")
 
         self._responses = tuple(value)
 
@@ -540,11 +598,13 @@ class Sensitivity:
         """
         out = OrderedDict()
         if not isinstance(value, Iterable):
-            raise ValueError(f"'materials' must be of type list, not of type {type(value)}")
+            raise ValueError(
+                f"'materials' must be of type list, not of type {type(value)}")
         else:
             for iv, v in enumerate(value):
                 if not isinstance(v, str):
-                    raise ValueError(f"Element n.{iv} of the materials list is not string!")
+                    raise ValueError(
+                        f"Element n.{iv} of the materials list is not string!")
                 else:
                     out[v] = iv
 
@@ -578,7 +638,9 @@ class Sensitivity:
             If value is not iterable.
         """
         if not isinstance(value, Iterable):
-            raise ValueError(f"Expected an Iterable instead of type {type(value)} for 'Sensitivity.zaid'")
+            raise ValueError(
+                f"Expected an Iterable instead of type {type(value)} for 'Sensitivity.zaid'"
+            )
 
         self._zaid = OrderedDict()
         for iv, v in enumerate(value):
@@ -612,7 +674,9 @@ class Sensitivity:
             If value is not iterable.
         """
         if not isinstance(value, Iterable):
-            raise ValueError(f"Expected an Iterable instead of type {type(value)} for 'Sensitivity.zais'")
+            raise ValueError(
+                f"Expected an Iterable instead of type {type(value)} for 'Sensitivity.zais'"
+            )
 
         out = OrderedDict()
         for iv, v in enumerate(value):
@@ -669,14 +733,18 @@ class Sensitivity:
             If any MT is not an integer.
         """
         if not isinstance(value, Iterable):
-            raise ValueError(f"Expected an Iterable instead of type {type(value)} for 'Sensitivity.MTs'")
+            raise ValueError(
+                f"Expected an Iterable instead of type {type(value)} for 'Sensitivity.MTs'"
+            )
         else:
             value = sorted(value)
 
         MTs = OrderedDict()
         for imt, mt in enumerate(value):
             if not isinstance(mt, int):
-                raise ValueError(f"Input MTs from ERANOS for attribute MTs must be of type int, not {type(mt)}!")
+                raise ValueError(
+                    f"Input MTs from ERANOS for attribute MTs must be of type int, not {type(mt)}!"
+                )
             MTs[mt] = imt
         self._MTs = MTs
 
@@ -697,8 +765,7 @@ class Sensitivity:
         if not isinstance(value, Iterable):
             raise ValueError(
                 f"Expected an Iterable instead of type {type(value)} "
-                "for 'Sensitivity.MTs'"
-            )
+                "for 'Sensitivity.MTs'")
 
         MTs = OrderedDict()
 
@@ -710,8 +777,7 @@ class Sensitivity:
             if not isinstance(mt, str):
                 raise ValueError(
                     f"Serpent MT descriptors must be strings or integers, "
-                    f"not {type(mt)}"
-                )
+                    f"not {type(mt)}")
 
             if "xs" in mt:
                 if "total" not in mt:
@@ -734,6 +800,92 @@ class Sensitivity:
         self._MTs = MTs
 
     @property
+    def energy_unit(self):
+        """
+        Unit used by the stored energy group structure.
+
+        Returns
+        -------
+        str
+            Canonical unit label, either ``"eV"`` or ``"MeV"``.
+        """
+        if hasattr(self, "_energy_unit"):
+            return self._energy_unit
+
+        if getattr(self, "reader", None) == "serpent":
+            return "MeV"
+        elif getattr(self, "reader", None) == "eranos":
+            return "eV"
+        return "eV"
+
+    @energy_unit.setter
+    def energy_unit(self, value):
+        """
+        Set the unit used by the stored energy group structure.
+
+        Parameters
+        ----------
+        value : str
+            Energy unit. Supported values are ``"eV"`` and ``"MeV"``.
+        """
+        self._energy_unit = utils.normalize_energy_unit(value)
+
+    @property
+    def energy_grid(self):
+        """
+        Energy group structure with unit metadata.
+
+        Returns
+        -------
+        utils.EnergyGrid
+            Stored energy group boundaries and their unit.
+        """
+        if self.group_structure is None:
+            raise ValueError(
+                "Group structure is not defined, cannot build an EnergyGrid.")
+        return utils.EnergyGrid(self.group_structure, self.energy_unit)
+
+    def group_structure_as(self, unit):
+        """
+        Return the energy group structure converted to a requested unit.
+
+        Parameters
+        ----------
+        unit : str
+            Target energy unit. Supported values are ``"eV"`` and ``"MeV"``.
+
+        Returns
+        -------
+        numpy.ndarray
+            Energy group boundaries converted to ``unit``.
+        """
+        return self.energy_grid.to(unit)
+
+    @property
+    def group_structure_ev(self):
+        """
+        Energy group structure converted to eV.
+
+        Returns
+        -------
+        numpy.ndarray
+            Energy group boundaries in eV.
+        """
+        return self.group_structure_as("eV")
+
+    @property
+    def group_structure_mev(self):
+        """
+        Energy group structure converted to MeV.
+
+        Returns
+        -------
+        numpy.ndarray
+            Energy group boundaries in MeV.
+        """
+        return self.group_structure_as("MeV")
+
+    @property
     def group_structure(self):
         """
         Energy group structure.
@@ -753,16 +905,33 @@ class Sensitivity:
         Parameters
         ----------
         value : iterable
-            Energy group boundaries.
+            Energy group boundaries. Values are stored in ascending order.
 
         Raises
         ------
         ValueError
-            If value is not iterable.
+            If value is not iterable or is not monotonic.
         """
         if value is not None:
+            if isinstance(value, utils.EnergyGrid):
+                self.energy_unit = value.unit
+                value = value.values.copy()
+
             if not isinstance(value, Iterable):
-                raise ValueError(f"Expected an iterable instead of type {type(value)} for arg 'group_structure'")
+                raise ValueError(
+                    f"Expected an iterable instead of type {type(value)} for arg 'group_structure'"
+                )
+            value = np.asarray(value, dtype=float)
+            diff = np.diff(value)
+
+            if value.ndim != 1:
+                raise ValueError(
+                    "Energy group structure must be one-dimensional.")
+            elif len(value) > 1 and np.all(diff < 0):
+                value = value[::-1]
+            elif len(value) > 1 and not np.all(diff > 0):
+                raise ValueError(
+                    "Energy group structure must be strictly monotonic.")
 
         self._group_structure = value
 
@@ -779,7 +948,8 @@ class Sensitivity:
         if self.group_structure is not None:
             return len(self.group_structure) - 1
         else:
-            raise ValueError("Group structure is not defined, cannot get number of groups.")
+            raise ValueError(
+                "Group structure is not defined, cannot get number of groups.")
 
     @property
     def n_resp(self):
@@ -794,7 +964,9 @@ class Sensitivity:
         if hasattr(self, 'responses'):
             return len(self.responses)
         else:
-            raise ValueError("'responses' attribute is not defined, cannot get number of responses 'n_resp'.")
+            raise ValueError(
+                "'responses' attribute is not defined, cannot get number of responses 'n_resp'."
+            )
 
     @property
     def n_mat(self):
@@ -809,7 +981,9 @@ class Sensitivity:
         if hasattr(self, 'materials'):
             return len(self.materials)
         else:
-            raise ValueError("'materials' attribute is not defined, cannot get number of materials 'n_mat'.")
+            raise ValueError(
+                "'materials' attribute is not defined, cannot get number of materials 'n_mat'."
+            )
 
     @property
     def n_zai(self):
@@ -824,7 +998,9 @@ class Sensitivity:
         if hasattr(self, 'zaid'):
             return len(self.zaid)
         else:
-            raise ValueError("'zaid' attribute is not defined, cannot get number of isotopes 'n_zai'.")
+            raise ValueError(
+                "'zaid' attribute is not defined, cannot get number of isotopes 'n_zai'."
+            )
 
     @property
     def n_MTs(self):
@@ -839,7 +1015,9 @@ class Sensitivity:
         if hasattr(self, 'MTs'):
             return len(self.MTs)
         else:
-            raise ValueError("'MTs' attribute is not defined, cannot get number of responses 'n_MTs'.")
+            raise ValueError(
+                "'MTs' attribute is not defined, cannot get number of responses 'n_MTs'."
+            )
 
     @property
     def sens(self):
@@ -882,7 +1060,9 @@ class Sensitivity:
         Parameters
         ----------
         value : dict
-            Nested dictionary with sensitivity data from ERANOS.
+            Nested dictionary with sensitivity data from ERANOS. ERANOS tables
+            are read in descending energy order and are reversed here before
+            being stored.
 
         Sets
         ----
@@ -901,7 +1081,8 @@ class Sensitivity:
                 for zais, iZaid in self.zais.items():
                     for mt, iMT in self.MTs.items():
                         if zais in value[resp][mat].keys():
-                            sens[iResp, iMat, iZaid, iMT, :] = value[resp][mat][zais][iMT, :]
+                            profile = value[resp][mat][zais][iMT, ::-1]
+                            sens[iResp, iMat, iZaid, iMT, :] = profile
                         else:
                             sens[iResp, iMat, iZaid, iMT, :] = dummy
 
@@ -909,7 +1090,7 @@ class Sensitivity:
 
     def _sens_serpent(self, value):
         """
-        Build the sensitivity dictionary for Serpent files.
+        Build the sensitivity array for Serpent files.
 
         Parameters
         ----------
@@ -918,26 +1099,32 @@ class Sensitivity:
 
         Sets
         ----
-        self._sens : dict
-            Dictionary of sensitivity arrays for each response.
+        self._sens : np.ndarray
+            Sensitivity array with shape (nResp, nMat, nZaid, nMTs, nE).
         """
         arr_shape = None
         for k, v in value.items():
             if not isinstance(v, np.ndarray):
-                raise ValueError(f"The keys of the sensitivity dict must be np.array, not of type {type(v)}."
-                                "The structure of serpentTools.parsers.sensitivity object might have changed!")
+                raise ValueError(
+                    f"The keys of the sensitivity dict must be np.array, not of type {type(v)}."
+                    "The structure of serpentTools.parsers.sensitivity object might have changed!"
+                )
             if arr_shape is None:
                 arr_shape = v.shape
             elif arr_shape != v.shape:
-                raise ValueError(f"All sensitivity arrays must have the same shape, but found {arr_shape} and {v.shape} for {k}."
-                                "The structure of serpentTools.parsers.sensitivity object might have changed!")
+                raise ValueError(
+                    f"All sensitivity arrays must have the same shape, but found {arr_shape} and {v.shape} for {k}."
+                    "The structure of serpentTools.parsers.sensitivity object might have changed!"
+                )
 
         sens_avg = np.zeros((len(self.responses), *arr_shape[:-1]))
         for i, resp in enumerate(self.responses):
             if not isinstance(value[resp], np.ndarray):
-                raise ValueError(f"The keys of the sensitivity dict must be np.array, not of type {type(value[resp])}")
+                raise ValueError(
+                    f"The keys of the sensitivity dict must be np.array, not of type {type(value[resp])}"
+                )
             else:
-                sens_avg[i, :, :, :, :] = value[resp][:, :, :, ::-1, 0]
+                sens_avg[i, :, :, :, :] = value[resp][:, :, :, :, 0]
 
         self._sens = sens_avg
 
@@ -988,7 +1175,7 @@ class Sensitivity:
 
     def _sens_rsd_serpent(self, value):
         """
-        Build the sensitivity RSD dictionary for Serpent files.
+        Build the sensitivity RSD array for Serpent files.
 
         Parameters
         ----------
@@ -997,8 +1184,8 @@ class Sensitivity:
 
         Sets
         ----
-        self._sens_rsd : dict
-            Dictionary of sensitivity RSD arrays for each response.
+        self._sens_rsd : np.ndarray
+            Sensitivity RSD array with shape (nResp, nMat, nZaid, nMTs, nE).
 
         Raises
         ------
@@ -1008,24 +1195,30 @@ class Sensitivity:
         arr_shape = None
         for k, v in value.items():
             if not isinstance(v, np.ndarray):
-                raise ValueError(f"The keys of the sensitivity dict must be np.array, not of type {type(v)}."
-                                "The structure of serpentTools.parsers.sensitivity object might have changed!")
+                raise ValueError(
+                    f"The keys of the sensitivity dict must be np.array, not of type {type(v)}."
+                    "The structure of serpentTools.parsers.sensitivity object might have changed!"
+                )
             if arr_shape is None:
                 arr_shape = v.shape
             elif arr_shape != v.shape:
-                raise ValueError(f"All sensitivity arrays must have the same shape, but found {arr_shape} and {v.shape} for {k}."
-                                "The structure of serpentTools.parsers.sensitivity object might have changed!")
+                raise ValueError(
+                    f"All sensitivity arrays must have the same shape, but found {arr_shape} and {v.shape} for {k}."
+                    "The structure of serpentTools.parsers.sensitivity object might have changed!"
+                )
 
         sens_rsd = np.zeros((len(self.responses), *arr_shape[:-1]))
         for i, resp in enumerate(self.responses):
             if not isinstance(value[resp], np.ndarray):
-                raise ValueError(f"The keys of the sensitivity dict must be np.array, not of type {type(value[resp])}")
+                raise ValueError(
+                    f"The keys of the sensitivity dict must be np.array, not of type {type(value[resp])}"
+                )
             else:
-                sens_rsd[i, :, :, :, :] = value[resp][:, :, :, ::-1, 1]
+                sens_rsd[i, :, :, :, :] = value[resp][:, :, :, :, 1]
 
         self._sens_rsd = sens_rsd
 
-    def get(self, resp=None, mat=None, MT=None, za=None, g=None, group_order='descending'):
+    def get(self, resp=None, mat=None, MT=None, za=None, g=None, group_order='ascending'):
         """
         Extract sensitivity profiles and uncertainties for specified parameters.
 
@@ -1033,19 +1226,22 @@ class Sensitivity:
         ----------
         resp : str or list, optional
             Response(s) to extract, e.g., 'keff', 'beff'.
-        If None, all responses are extracted.
+            If None, all responses are extracted.
         mat : str or list, optional
             Material(s) to extract, e.g., 'total', 'm1'.
-        If None, all materials are extracted.
+            If None, all materials are extracted.
         MT : int or list, optional
             MT number(s) to extract, e.g., 2, 4, 18.
-        If None, all MTs are extracted.
+            If None, all MTs are extracted.
         za : str, int, or list, optional
             ZA string(s) or number(s) to extract, e.g., 'Pu-239', 942390 or ['Pu-239', 'Pu-240'].
             If None, all ZAIDs are extracted.
         g : int or list, optional
             Energy group(s) to extract, e.g., 1, 2, ..., n_groups.
             If None, all groups are extracted.
+        group_order : {"ascending", "descending"}, optional
+            Order used for the returned energy groups. ``"ascending"``
+            preserves the internal ordering; ``"descending"`` reverses it.
 
         Returns
         -------
@@ -1054,6 +1250,12 @@ class Sensitivity:
         S_rsd : np.ndarray or dict, optional
             Sensitivity RSD(s), if available.
         """
+        allowed_group_orders = {"ascending", "descending"}
+        if group_order not in allowed_group_orders:
+            raise ValueError(
+                f"'group_order' must be one of {sorted(allowed_group_orders)}, "
+                f"not {group_order!r}")
+
         # get indexes
         iM = []
         iZ = []
@@ -1068,7 +1270,9 @@ class Sensitivity:
                 else:
                     iM.append(self.materials[mat])
             elif not isinstance(mat, list):
-                raise ValueError(f"'mat' should be of type str or list, not of type {type(mat)}")
+                raise ValueError(
+                    f"'mat' should be of type str or list, not of type {type(mat)}"
+                )
             else:
                 for val in mat:
                     iM.append(self.materials[val])
@@ -1084,7 +1288,9 @@ class Sensitivity:
                 else:
                     iP = [self.MTs[MT]]
             elif not isinstance(MT, list):
-                raise ValueError(f"'MT' should be of type int or list, not of type {type(MT)}")
+                raise ValueError(
+                    f"'MT' should be of type int or list, not of type {type(MT)}"
+                )
             else:
                 for val in MT:
                     iP.append(self.MTs[val])
@@ -1105,7 +1311,9 @@ class Sensitivity:
                 else:
                     iZ = [self.zaid[za]]
             elif not isinstance(za, list):
-                raise ValueError(f"'za' should be of type str or int, not of type {type(za)}")
+                raise ValueError(
+                    f"'za' should be of type str or int, not of type {type(za)}"
+                )
             else:
                 for val in za:
                     if isinstance(val, str):
@@ -1113,7 +1321,9 @@ class Sensitivity:
                     elif isinstance(val, int):
                         iZ.append(self.zaid[val])
                     else:
-                        raise ValueError(f"Elements in list 'za' should be of type str or int, not of type {type(za)}")
+                        raise ValueError(
+                            f"Elements in list 'za' should be of type str or int, not of type {type(za)}"
+                        )
         else:
             for k, v in self.zaid.items():
                 iZ.append(v)
@@ -1126,7 +1336,9 @@ class Sensitivity:
                 else:
                     iR = [self.responses.index(resp)]
             elif not isinstance(resp, list):
-                raise ValueError(f"'resp' should be of type str or list, not of type {type(resp)}")
+                raise ValueError(
+                    f"'resp' should be of type str or list, not of type {type(resp)}"
+                )
             else:
                 iR = []
                 for r in resp:
@@ -1139,17 +1351,31 @@ class Sensitivity:
             iR = [ir for ir in range(len(self.responses))]
 
         # --- get group indexes
+        def group_number_to_index(group_number):
+            if not isinstance(group_number, int):
+                raise ValueError(
+                    f"Elements in list 'g' should be of type int, not of type {type(group_number)}"
+                )
+            elif group_number < 1 or group_number > self.n_groups:
+                raise ValueError(f"Energy group {group_number} not available!")
+
+            if group_order == 'ascending':
+                return group_number - 1
+            else:
+                return self.n_groups - group_number
+
         if g is not None:
             if isinstance(g, int):
-                if group_order == 'ascending':
-                    iG = [self._groups - 1]
-                else:
-                    iG = [g - 1]
+                iG = [group_number_to_index(g)]
             elif not isinstance(g, list):
-                raise ValueError(f"'g' must be of type int or list, not of type {type(g)}")
+                raise ValueError(
+                    f"'g' must be of type int or list, not of type {type(g)}")
+            else:
+                for val in g:
+                    iG.append(group_number_to_index(val))
         else:
             iG = [ig for ig in range(len(self.group_structure) - 1)]
-            if group_order == 'ascending':
+            if group_order == 'descending':
                 iG = iG[::-1]
 
         # --- get sensitivity vector and uncertainty
@@ -1161,63 +1387,77 @@ class Sensitivity:
             return S_avg
 
     def collapse(self, fewgrp, weight=None, egridname=None):
-        """Collapse in energy the sensitivity coefficient.
+        """
+        Collapse sensitivity coefficients onto a coarser energy grid.
 
         Parameters
         ----------
         fewgrp : iterable
-            Few-group structure to perform the collapsing, in MeV.
-        weight: array, optional
-            Weighting function to perform the energy collapsing, by default ``None``.
-        egridname: str, optional
+            Few-group boundaries used for the collapse.
+        weight : array-like, optional
+            Weighting function used for the energy collapse. If ``None``, a
+            unit weighting vector is used.
+        egridname : str, optional
             Name of the energy grid, by default ``None``.
 
         Raises
         ------
-        OSError
-            Collapsing failed: weighting flux missing in {}.
+        SensitivityError
+            If the target grid is incompatible with the current energy grid or
+            the weighting vector length is inconsistent.
 
         Returns
         -------
-        None.
-
+        None
+            The object is updated in place.
         """
         if weight is None:
             weight = np.ones((self.n_groups))
 
         if len(weight) != self.n_groups:
-            raise SensitivityError(f"len of the weighting function, {len(weight)} not consistent with the number of groups in sensitivities {self.n_groups}")
+            raise SensitivityError(
+                f"len of the weighting function, {len(weight)} not consistent with the number of "
+                f"groups in sensitivities {self.n_groups}")
 
         multigrp = self.group_structure
+
+        if isinstance(fewgrp, utils.EnergyGrid):
+            fewgrp = fewgrp.to(self.energy_unit)
 
         if isinstance(fewgrp, list):
             fewgrp = np.asarray(fewgrp)
 
         # ensure ascending order
-        fewgrp = sorted(fewgrp)
-        H = len(multigrp)-1
-        G = len(fewgrp)-1
+        fewgrp = np.asarray(sorted(fewgrp), dtype=float)
+        H = len(multigrp) - 1
+        G = len(fewgrp) - 1
         # sanity checks
         if G >= H:
-            raise SensitivityError(f'Collapsing failed: few-group structure should ',
-                                   f' have less than {H} group')
+            raise SensitivityError(
+                f'Collapsing failed: few-group structure should ',
+                f' have less than {H} group')
         if multigrp[0] != fewgrp[0] or multigrp[-1] != fewgrp[-1]:
-            raise SensitivityError('Collapsing failed: few-group structure '
-                                   'boundaries do not match with multi-group one:'
-                                   f'multi_group lower bound: {multigrp[0]}, few_group lower bound: {fewgrp[0]} ',
-                                   f'multi_group lower bound: {multigrp[-1]}, few_group lower bound: {fewgrp[-1]}')
+            raise SensitivityError(
+                'Collapsing failed: few-group structure '
+                'boundaries do not match with multi-group one:'
+                f'multi_group lower bound: {multigrp[0]}, few_group lower bound: {fewgrp[0]} ',
+                f'multi_group lower bound: {multigrp[-1]}, few_group lower bound: {fewgrp[-1]}'
+            )
         # map fewgroup onto multigroup
-        few_into_multigrp = np.zeros((G + 1,), dtype=int)
+        few_into_multigrp = np.zeros((G + 1, ), dtype=int)
         # multigrp_bin = np.zeros((H+1,), dtype=int)
         for ig, g in enumerate(fewgrp):
-            reldiff = abs(multigrp-g)/g
+            reldiff = abs(multigrp - g) / g
             idx = np.argmin(reldiff)
             if (reldiff[idx] > 1E-5):
-                raise SensitivityError(f'Group boundary n.{ig}, {g} MeV not present in fine grid!')
+                raise SensitivityError(
+                    f'Group boundary n.{ig}, {g} {self.energy_unit} not present in fine grid!'
+                )
             else:
                 few_into_multigrp[ig] = idx
 
-        dims = (self.n_resp, self.n_mat, self.n_zai, self.n_MTs, len(fewgrp) - 1)
+        dims = (self.n_resp, self.n_mat, self.n_zai, self.n_MTs,
+                len(fewgrp) - 1)
 
         collapsed_sens = np.zeros(dims)
         if self.sens_rsd is not None:
@@ -1225,24 +1465,33 @@ class Sensitivity:
 
         for ig in range(G):
             # select fine groups in g
-            G1, G2 = fewgrp[ig], fewgrp[ig+1]
+            G1, G2 = fewgrp[ig], fewgrp[ig + 1]
             iS = few_into_multigrp[ig]
-            iE = few_into_multigrp[ig+1]
+            iE = few_into_multigrp[ig + 1]
             # --- collapse
             for iresp in range(self.n_resp):
                 for imat in range(self.n_mat):
                     for izai in range(self.n_zai):
                         for iMT in range(self.n_MTs):
                             if self.sens_rsd is None:
-                                sensitivity = self.sens[iresp, imat, izai, iMT, :]
+                                sensitivity = self.sens[iresp, imat, izai,
+                                                        iMT, :]
+                                collapsed_values = weight[iS:iE].dot(
+                                    sensitivity[iS:iE])
+                                collapsed_sens[iresp, imat, izai, iMT,
+                                               ig] = collapsed_values
                             else:
                                 S_avg = self.sens[iresp, imat, izai, iMT, :]
-                                S_rsd = self.sens_rsd[iresp, imat, izai, iMT, :]
+                                S_rsd = self.sens_rsd[iresp, imat, izai,
+                                                      iMT, :]
                                 sensitivity = utils.np2unp(S_avg, 2 * S_rsd)
-
-                            collapsed_values = weight[iS:iE].dot(sensitivity[iS:iE]) # np.divide(, NC, where=NC!=0)
-                            collapsed_sens[iresp, imat, izai, iMT, ig] = collapsed_values.n
-                            collapsed_sens_rsd[iresp, imat, izai, iMT, ig] = collapsed_values.s / collapsed_values.n if collapsed_values.n != 0 else 0.0
+                                collapsed_values = weight[iS:iE].dot(
+                                    sensitivity[iS:iE])
+                                collapsed_sens[iresp, imat, izai, iMT,
+                                               ig] = collapsed_values.n
+                                collapsed_sens_rsd[
+                                    iresp, imat, izai, iMT,
+                                    ig] = collapsed_values.s / collapsed_values.n if collapsed_values.n != 0 else 0.0
 
         # update attributes data
         self._sens = collapsed_sens
@@ -1250,6 +1499,7 @@ class Sensitivity:
             self._sens_rsd = collapsed_sens_rsd
 
         self.fine_energygrid = self.group_structure
+        self.fine_energygrid_unit = self.energy_unit
         self.group_structure = fewgrp
         self.egridname = egridname if egridname else f'{G}G'
 
@@ -1266,29 +1516,75 @@ class Sensitivity:
     #         raise ValueError("Invalid sensitivity path provided.")
 
     def _from_multiple(self, paths, duplicate_policy="raise"):
+        """
+        Read and merge multiple sensitivity files into this object.
+
+        Parameters
+        ----------
+        paths : sequence of pathlib.Path
+            Sensitivity files to read and merge. Currently all files must be
+            Serpent ``*_sens0.m`` files.
+        duplicate_policy : {"raise", "keep_first", "keep_last"}, optional
+            Policy used when the same response/material/ZA/MT profile appears
+            in more than one input file.
+
+        Raises
+        ------
+        SensitivityError
+            If readers differ, non-Serpent files are provided, or energy grids
+            are inconsistent.
+        """
         objs = [Sensitivity(p) for p in paths]
 
         readers = {obj.reader for obj in objs}
         if len(readers) != 1:
-            raise SensitivityError("Cannot merge sensitivity files from different readers.")
+            raise SensitivityError(
+                "Cannot merge sensitivity files from different readers.")
 
         if readers != {"serpent"}:
-            raise SensitivityError("Merging multiple files is currently supported only for Serpent _sens0.m files.")
+            raise SensitivityError(
+                "Merging multiple files is currently supported only for Serpent _sens0.m files."
+            )
 
         self.reader = "serpent"
 
         self._check_same_energy_grid(objs)
 
-        self._merge_serpent_sensitivities(objs, duplicate_policy=duplicate_policy)
+        self._merge_serpent_sensitivities(objs,
+                                          duplicate_policy=duplicate_policy)
 
     @staticmethod
     def _check_same_energy_grid(objs, rtol=0.0, atol=0.0):
+        """
+        Validate that all sensitivity objects share the same energy grid.
+
+        Parameters
+        ----------
+        objs : sequence of Sensitivity
+            Sensitivity objects to compare.
+        rtol : float, optional
+            Relative tolerance passed to ``numpy.allclose``.
+        atol : float, optional
+            Absolute tolerance passed to ``numpy.allclose``.
+
+        Raises
+        ------
+        SensitivityError
+            If any object has an energy grid with a different shape or values.
+        """
         ref = objs[0].group_structure
+        ref_unit = objs[0].energy_unit
         for i, obj in enumerate(objs[1:], start=1):
-            if ref.shape != obj.group_structure.shape or not np.allclose(ref, obj.group_structure, rtol=rtol, atol=atol):
+            if obj.energy_unit != ref_unit:
+                raise SensitivityError(
+                    f"Inconsistent energy unit between {objs[0].filepath} and {obj.filepath}."
+                )
+
+            if ref.shape != obj.group_structure.shape or not np.allclose(
+                    ref, obj.group_structure, rtol=rtol, atol=atol):
                 raise SensitivityError(
                     f"Inconsistent energy grid between {objs[0].filepath} and {obj.filepath}."
-                                        )
+                )
 
     def _merge_serpent_sensitivities(self, objs, duplicate_policy="raise"):
         """
@@ -1313,14 +1609,13 @@ class Sensitivity:
             If duplicate_policy is invalid.
         """
         if len(objs) == 0:
-            raise SensitivityError("Cannot merge an empty list of Sensitivity objects.")
+            raise SensitivityError(
+                "Cannot merge an empty list of Sensitivity objects.")
 
         allowed_policies = {"raise", "keep_first", "keep_last"}
         if duplicate_policy not in allowed_policies:
-            raise ValueError(
-                f"Invalid duplicate_policy: {duplicate_policy}. "
-                f"Allowed values are {sorted(allowed_policies)}."
-            )
+            raise ValueError(f"Invalid duplicate_policy: {duplicate_policy}. "
+                             f"Allowed values are {sorted(allowed_policies)}.")
 
         # reader consistency
         readers = {obj.reader for obj in objs}
@@ -1358,6 +1653,7 @@ class Sensitivity:
         ref_grid = np.asarray(objs[0].group_structure)
         # ---- assign merged metadata using existing setters ----
         self.reader = "serpent"
+        self.energy_unit = objs[0].energy_unit
         self.responses = responses
         self.materials = materials
         self.zaid = zaids
@@ -1377,17 +1673,13 @@ class Sensitivity:
         if any(rsd_availability) and not all(rsd_availability):
             raise SensitivityError(
                 "Cannot merge Serpent sensitivity objects with inconsistent "
-                "RSD availability."
-            )
+                "RSD availability.")
 
         has_rsd = all(rsd_availability)
 
         merged_avg = np.zeros((nResp, nMat, nZaid, nMTs, nE))
-        merged_rsd = (
-            np.zeros((nResp, nMat, nZaid, nMTs, nE))
-            if has_rsd
-            else None
-        )
+        merged_rsd = (np.zeros(
+            (nResp, nMat, nZaid, nMTs, nE)) if has_rsd else None)
 
         filled = {}
 
@@ -1397,13 +1689,9 @@ class Sensitivity:
                     for za in obj.zaid:
                         for mt in obj.MTs:
                             try:
-                                out = obj.get(
-                                    resp=[resp],
-                                    mat=[mat],
-                                    MT=[mt],
-                                    za=[za],
-                                    group_order="descending",
-                                )
+                                out = obj.get(resp=[resp], mat=[mat], MT=[mt], za=[za],
+                                              group_order="ascending",
+                                              )
                             except (KeyError, ValueError) as exc:
                                 raise SensitivityError(
                                     "Could not retrieve sensitivity profile "
@@ -1426,8 +1714,7 @@ class Sensitivity:
                                         f"(response={resp}, material={mat}, "
                                         f"ZA={za}, MT={mt}). "
                                         f"First source: {objs[filled[key]].filepath}; "
-                                        f"second source: {obj.filepath}."
-                                    )
+                                        f"second source: {obj.filepath}.")
 
                                 if duplicate_policy == "keep_first":
                                     continue
@@ -1444,8 +1731,7 @@ class Sensitivity:
                             if avg.size != nE:
                                 raise SensitivityError(
                                     f"Sensitivity profile {key} contains {avg.size} "
-                                    f"groups, expected {nE}."
-                                )
+                                    f"groups, expected {nE}.")
 
                             merged_avg[iR, iM, iZ, iP, :] = avg
 
@@ -1455,8 +1741,7 @@ class Sensitivity:
                                 if rsd.size != nE:
                                     raise SensitivityError(
                                         f"RSD profile {key} contains {rsd.size} "
-                                        f"groups, expected {nE}."
-                                    )
+                                        f"groups, expected {nE}.")
 
                                 merged_rsd[iR, iM, iZ, iP, :] = rsd
 
@@ -1467,6 +1752,19 @@ class Sensitivity:
 
 
 class SensitivityError(Exception):
+    """Custom exception raised for invalid sensitivity input or processing."""
+
     pass
 
 
+def _expose_public_aliases():
+    """Expose class symbols on the parent package for clean from-imports."""
+    import sys as _sys
+
+    parent = _sys.modules.get(__package__)
+    if parent is not None:
+        parent.Sensitivity = Sensitivity
+        parent.SensitivityError = SensitivityError
+
+
+_expose_public_aliases()

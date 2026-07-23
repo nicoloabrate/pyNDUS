@@ -1,10 +1,10 @@
 """
 Author: N. Abrate.
 
-File: GetCovariance.py
+File: covariance.py
 
-Description: Class calling the SANDY and NJOY codes to produce and extract
-             multi-group relative covariance matrices
+Description: tools to produce, read, and extract multi-group relative
+             covariance matrices with SANDY and NJOY.
 """
 import io
 import os
@@ -21,7 +21,7 @@ from datetime import datetime
 from contextlib import redirect_stdout
 try:
     import pyNDUS.utils as utils
-except ModuleNotFoundError: # when run as a script
+except ModuleNotFoundError:  # when run as a script
     try:
         from . import utils
     except ImportError:
@@ -29,7 +29,8 @@ except ModuleNotFoundError: # when run as a script
 
 sandy_ver = sandy.__version__
 
-class GetCovariance():
+
+class Covariance():
     """
     Class to process and extract multi-group relative covariance matrices for nuclear data
     using NJOY and SANDY codes, respectively.
@@ -52,6 +53,9 @@ class GetCovariance():
         Temperature in Kelvin (default: 300).
     group_structure : iterable, optional
         Energy group structure (list, numpy array, tuple etc.).
+    energy_unit : str, optional
+        Unit used by ``group_structure``. Supported values are ``"eV"`` and
+        ``"MeV"``. Defaults to ``"eV"``.
     egridname : str, optional
         Name of the energy grid (default: None).
     lib : str, optional
@@ -69,6 +73,8 @@ class GetCovariance():
         Temperature in Kelvin for processing the ENDF-6 file with the BROADR module of NJOY.
     group_structure : iterable
         Energy group structure.
+    energy_unit : str
+        Unit used by the stored energy group structure.
     egridname : str
         Name of the energy grid.
     library : str
@@ -84,12 +90,24 @@ class GetCovariance():
         Available MF:
         - MF=31 for neutron multiplicities
         - MF=33 for cross sections
+        - MF=34 for angular distributions
+        - MF=35 for energy distributions
     """
-    def __init__(self, zaid, temperature=300, group_structure=None, egridname=None,
-                 lib="endfb_80", process_resonances=True, author=None, njoy_ver=None, 
-                 database=False, cwd=None):
+
+    def __init__(self,
+                 zaid,
+                 temperature=300,
+                 group_structure=None,
+                 egridname=None,
+                 lib="endfb_80",
+                 process_resonances=True,
+                 author=None,
+                 njoy_ver=None,
+                 database=False,
+                 cwd=None,
+                 energy_unit="eV"):
         """
-        Initialize the GetCovariance object, create necessary directories, and extract covariance matrices.
+        Initialize the Covariance object, create necessary directories, and extract covariance matrices.
 
         Parameters
         ----------
@@ -99,25 +117,31 @@ class GetCovariance():
             Temperature in Kelvin (default: 300).
         group_structure : iterable, optional
             Energy group structure.
+        energy_unit : str, optional
+            Unit used by ``group_structure``. Supported values are ``"eV"`` and
+            ``"MeV"``.
         egridname : str, optional
             Name of the energy grid.
         lib : str, optional
             Nuclear data library to use.
-        process_resonances: bool, optional
-            Flag for processing for resonance parameter covariances
+        process_resonances : bool, optional
+            If True, process resonance parameter covariances in ERRORR.
         author : str, optional
             Author name for logging.
         njoy_ver : str, optional
             NJOY version for logging.
-        database : logical, optional
-            Flag for using a database storing the covariance matrices.
+        database : bool, optional
+            If True, use ``cwd`` as a database root and create/read the
+            library and energy-grid subdirectories. If False, read existing
+            ERRORR files from ``cwd`` or generate missing files there.
         cwd : str or pathlib.Path, optional
-            Working directory for storing files.
+            Working directory for storing or reading files.
         """
         # --- input validation
         self.zaid = zaid
         self.zais = utils.zaid2zais(self.zaid)
         self.temperature = temperature
+        self.energy_unit = energy_unit
         self.group_structure = group_structure
         self.egridname = egridname
         self.library = lib
@@ -126,86 +150,140 @@ class GetCovariance():
         if author is None:
             author = "unknown"
         elif not isinstance(author, str):
-            raise ValueError(f"Author arg must be of type str, not of type {type(author)}")
+            raise ValueError(
+                f"Author arg must be of type str, not of type {type(author)}")
 
         if njoy_ver is None:
             njoy_ver = "unknown"
         elif not isinstance(njoy_ver, str):
-            raise ValueError(f"njoy_ver arg must be of type str, not of type {type(njoy_ver)}")
+            raise ValueError(
+                f"njoy_ver arg must be of type str, not of type {type(njoy_ver)}"
+            )
 
+        mf_numbers = (31, 33, 34, 35)
+        errorr_name = f"{self.zais}_{temperature:g}K.errorr"
+
+        errorr_out = {}
 
         if database:
-            # --- create directories
-            if not Path.exists(self.path.joinpath(lib)):
-                os.mkdir(self.path.joinpath(lib))
+            database_root = self.path
+            library_dir = database_root / lib
+            endf6_dir = library_dir / "endf6"
+            grid_dir = library_dir / egridname
+            errorr_dir = grid_dir / "errorr"
 
-            cwd = self.path.joinpath(lib)
+            endf6_dir.mkdir(parents=True, exist_ok=True)
+            errorr_dir.mkdir(parents=True, exist_ok=True)
 
-            # --- create folder for ENDF-6 formatted files
-            subdir = 'endf6'
+            # Get the ENDF-6 file.
+            endf6_path = endf6_dir / f"{self.zais}.endf"
 
-            if not Path.exists(cwd.joinpath(subdir)):
-                os.mkdir(cwd.joinpath(subdir))
-
-            e6dir = cwd.joinpath(subdir)
-
-            if not Path.exists(cwd.joinpath(egridname)):
-                os.mkdir(cwd.joinpath(egridname))
-
-            cwd = cwd.joinpath(egridname)
-
-            # --- create folder for ERRORR formatted files
-            for subdir in ['errorr']:
-                if not Path.exists(cwd.joinpath(subdir)):
-                    os.mkdir(cwd.joinpath(subdir))
-
-            # --- get ENDF-6 formatted tape
-            endf6_name = f'{self.zais}.endf'
-            endf6_path = e6dir.joinpath(endf6_name)
-
-            if Path.exists(endf6_path):
+            if endf6_path.exists():
                 endf6_tape = sandy.Endf6.from_file(endf6_path)
-                run_errorr = False
             else:
                 endf6_tape = sandy.get_endf6_file(lib, "xs", zaid)
                 endf6_tape.to_file(endf6_path)
-                run_errorr = True
 
-            # --- get covariance matrix
-            errorr_name = f'{self.zais}_{temperature:g}K.errorr'
-            errorr_exists = False
-            for mf in [31, 33, 34, 35]:
-                if Path.exists(cwd.joinpath('errorr', f"{errorr_name}{mf}")):
-                    errorr_exists = True
-                    break
+            # Load all ERRORR files already available.
+            for mf in mf_numbers:
+                path = errorr_dir / f"{errorr_name}{mf}"
+                if path.exists():
+                    errorr_out[f"errorr{mf}"] = sandy.Errorr.from_file(path)
 
-            if not errorr_exists or run_errorr:
-                errorr_path = cwd.joinpath('errorr', f"{errorr_name}")
-                errorr_out = GetCovariance.sandy_calls_errorr(endf6_tape, zaid, temperature,
-                                                            group_structure, egridname,
-                                                            errorr_path, process_resonances,
-                                                            lib, author, njoy_ver)
+            # Run ERRORR when no processed file is available.
+            #
+            # Requiring all four files would be unsafe because some MF sections
+            # may not exist for the selected nuclide.
+            if not errorr_out:
+                if self.group_structure is not None:
+                    group_structure_errorr = (self.group_structure_ev)
+                else:
+                    group_structure_errorr = None
+
+                generated = Covariance.sandy_calls_errorr(
+                    endf6_tape=endf6_tape,
+                    zaid=zaid,
+                    temperature=temperature,
+                    group_structure=group_structure_errorr,
+                    egridname=egridname,
+                    errorr_dir=errorr_dir,
+                    errorr_name=errorr_name,
+                    process_resonances=process_resonances,
+                    lib=lib,
+                    author=author,
+                    njoy_ver=njoy_ver,
+                )
+
+                if generated:
+                    errorr_out.update(generated)
+
+                # Read the files from disk, including any files created by ERRORR
+                # but not returned directly by sandy_calls_errorr.
+                for mf in mf_numbers:
+                    key = f"errorr{mf}"
+                    path = errorr_dir / f"{errorr_name}{mf}"
+
+                    if key not in errorr_out and path.exists():
+                        errorr_out[key] = sandy.Errorr.from_file(path)
 
         else:
-            self.path = Path(cwd)
-            run_errorr = False
-            errorr_name = f'{self.zais}_{temperature:g}K.errorr'
-            errorr_exists = False
-            for mf in [31, 33, 34, 35]:
-                if Path.exists(cwd.joinpath(f"{errorr_name}{mf}")):
-                    errorr_exists = True
-                    break
+            # In non-database mode, cwd directly contains the ERRORR files.
+            errorr_dir = self.path
 
-        if errorr_exists and not run_errorr:
-            errorr_out = {}
-            for mf in [31, 33, 34, 35]:
-                if cwd.joinpath('errorr', f"{errorr_name}{mf}").exists():
-                    errorr_path = cwd.joinpath('errorr', f"{errorr_name}{mf}")
-                    errorr_out[f"errorr{mf}"] = sandy.Errorr.from_file(errorr_path)
+            for mf in mf_numbers:
+                path = errorr_dir / f"{errorr_name}{mf}"
+
+                if path.exists():
+                    errorr_out[f"errorr{mf}"] = sandy.Errorr.from_file(path)
+
+            if not errorr_out:
+                endf6_path = errorr_dir / f"{self.zais}.endf"
+
+                if endf6_path.exists():
+                    endf6_tape = sandy.Endf6.from_file(endf6_path)
+                else:
+                    endf6_tape = sandy.get_endf6_file(lib, "xs", zaid)
+                    endf6_tape.to_file(endf6_path)
+
+                if self.group_structure is not None:
+                    group_structure_errorr = self.group_structure_ev
+                else:
+                    group_structure_errorr = None
+
+                generated = Covariance.sandy_calls_errorr(
+                    endf6_tape=endf6_tape,
+                    zaid=zaid,
+                    temperature=temperature,
+                    group_structure=group_structure_errorr,
+                    egridname=egridname,
+                    errorr_dir=errorr_dir,
+                    errorr_name=errorr_name,
+                    process_resonances=process_resonances,
+                    lib=lib,
+                    author=author,
+                    njoy_ver=njoy_ver,
+                )
+
+                if generated:
+                    errorr_out.update(generated)
+
+                for mf in mf_numbers:
+                    key = f"errorr{mf}"
+                    path = errorr_dir / f"{errorr_name}{mf}"
+
+                    if key not in errorr_out and path.exists():
+                        errorr_out[key] = sandy.Errorr.from_file(path)
+
+        if not errorr_out:
+            expected = ", ".join(
+                str(errorr_dir / f"{errorr_name}{mf}") for mf in mf_numbers)
+            raise FileNotFoundError(
+                f"No ERRORR file was found. Expected one or more of: {expected}"
+            )
 
         self.MFs2MTs = errorr_out
         self.mat = errorr_out
-        self.rcov =  errorr_out
+        self.rcov = errorr_out
 
     @property
     def temperature(self):
@@ -235,7 +313,9 @@ class GetCovariance():
             If value is not a positive number.
         """
         if not isinstance(value, int) and not isinstance(value, float):
-            raise ValueError(f"Expected type int or float instead of type {type(value)} for arg 'temperature'")
+            raise ValueError(
+                f"Expected type int or float instead of type {type(value)} for arg 'temperature'"
+            )
         elif value <= 0:
             raise ValueError("Temperature must be >0!")
         else:
@@ -271,9 +351,92 @@ class GetCovariance():
         if value <= 0:
             raise ValueError("ZAid must be >0!")
         elif not isinstance(value, int):
-            raise ValueError(f"Expected type int instead of type {type(value)} for arg 'ZAid'")
+            raise ValueError(
+                f"Expected type int instead of type {type(value)} for arg 'ZAid'"
+            )
 
         self._zaid = value
+
+    @property
+    def energy_unit(self):
+        """
+        Unit used by the stored energy group structure.
+
+        Returns
+        -------
+        str
+            Canonical unit label, either ``"eV"`` or ``"MeV"``.
+        """
+        if hasattr(self, "_energy_unit"):
+            return self._energy_unit
+        return "eV"
+
+    @energy_unit.setter
+    def energy_unit(self, value):
+        """
+        Set the unit used by the stored energy group structure.
+
+        Parameters
+        ----------
+        value : str
+            Energy unit. Supported values are ``"eV"`` and ``"MeV"``.
+        """
+        self._energy_unit = utils.normalize_energy_unit(value)
+
+    @property
+    def energy_grid(self):
+        """
+        Energy group structure with unit metadata.
+
+        Returns
+        -------
+        utils.EnergyGrid
+            Stored energy group boundaries and their unit.
+        """
+        if self.group_structure is None:
+            raise ValueError(
+                "Group structure is not defined, cannot build an EnergyGrid.")
+        return utils.EnergyGrid(self.group_structure, self.energy_unit)
+
+    def group_structure_as(self, unit):
+        """
+        Return the energy group structure converted to a requested unit.
+
+        Parameters
+        ----------
+        unit : str
+            Target energy unit. Supported values are ``"eV"`` and ``"MeV"``.
+
+        Returns
+        -------
+        numpy.ndarray
+            Energy group boundaries converted to ``unit``.
+        """
+        return self.energy_grid.to(unit)
+
+    @property
+    def group_structure_ev(self):
+        """
+        Energy group structure converted to eV.
+
+        Returns
+        -------
+        numpy.ndarray
+            Energy group boundaries in eV.
+        """
+        return self.group_structure_as("eV")
+
+    @property
+    def group_structure_mev(self):
+        """
+        Energy group structure converted to MeV.
+
+        Returns
+        -------
+        numpy.ndarray
+            Energy group boundaries in MeV.
+        """
+        return self.group_structure_as("MeV")
 
     @property
     def group_structure(self):
@@ -303,8 +466,14 @@ class GetCovariance():
             If value is not iterable.
         """
         if value is not None:
+            if isinstance(value, utils.EnergyGrid):
+                self.energy_unit = value.unit
+                value = value.values.copy()
+
             if not isinstance(value, Iterable):
-                raise ValueError(f"Expected an iterable instead of type {type(value)} for arg 'group_structure'")
+                raise ValueError(
+                    f"Expected an iterable instead of type {type(value)} for arg 'group_structure'"
+                )
 
         self._group_structure = value
 
@@ -338,7 +507,9 @@ class GetCovariance():
         if value is None:
             self._egridname = "sandy_default_energy_grid"
         elif not isinstance(value, str):
-            raise ValueError(f"Expected 'str' instead of type {type(value)} for arg 'egridname'")
+            raise ValueError(
+                f"Expected 'str' instead of type {type(value)} for arg 'egridname'"
+            )
         else:
             self._egridname = value
 
@@ -370,7 +541,8 @@ class GetCovariance():
             If value is not a string.
         """
         if not isinstance(value, str):
-            raise ValueError(f"Expected 'str' instead of type {type(value)} for arg 'lib'")
+            raise ValueError(
+                f"Expected 'str' instead of type {type(value)} for arg 'lib'")
         else:
             self._library = value
 
@@ -408,7 +580,9 @@ class GetCovariance():
         elif isinstance(cwd, Path):
             self._path = cwd
         else:
-            raise ValueError(f"Expected 'str' or 'Path' types instead of type {type(cwd)} for arg 'cwd'")
+            raise ValueError(
+                f"Expected 'str' or 'Path' types instead of type {type(cwd)} for arg 'cwd'"
+            )
 
         if not Path.exists(self._path):
             raise ValueError(f"Provided path {self._path} does not exist!")
@@ -504,7 +678,7 @@ class GetCovariance():
 
         Raises
         ------
-        GetCovarianceError
+        CovarianceError
             If multiple MAT numbers are found.
         """
         mat = 0
@@ -512,12 +686,13 @@ class GetCovariance():
         for imf, mf in enumerate(rcov.keys()):
 
             if len(rcov[mf].mat) != 1:
-                raise GetCovarianceError(f"Cannot handle an ERRORR file with more MAT numbers!")
+                raise CovarianceError(
+                    f"Cannot handle an ERRORR file with more MAT numbers!")
 
             if imf == 0:
                 mat = rcov[mf].mat[0]
             elif mat != rcov[mf].mat[0]:
-                raise GetCovarianceError(f"MF={mf} contains a different MAT!")
+                raise CovarianceError(f"MF={mf} contains a different MAT!")
 
         self._mat = mat
 
@@ -545,14 +720,14 @@ class GetCovariance():
         """
         out = {}
         for mf in rcov.keys():
-            if mf in ['errorr31', 'errorr33']:
+            if mf in ['errorr31', 'errorr33', 'errorr34', 'errorr35']:
                 out[mf] = rcov[mf].get_cov().data
 
         self._rcov = out
 
-    def get(self, MT, MF=None, to_numpy=False):
+    def get(self, MT, *, MF, to_numpy=False):
         """
-        Extract covariance matrix or submatrix for specified MT(s) and MF(s).
+        Extract a covariance matrix or submatrix for specified MT(s) and MF.
 
         Parameters
         ----------
@@ -561,8 +736,9 @@ class GetCovariance():
             If a tuple is provided, it must contain exactly two MTs, and it will return the covariance between them.
             If a list is provided, it will return the full covariance matrix for all specified MTs, e.g. MT1-MT1, 
             MT1-MT2, MT2-MT1, MT2-MT2.
-        MF : int or str, optional
-            MF number or 'errorr<MF>' string. If None, all available MFs are used.
+        MF : int or str
+            Required keyword-only MF number or 'errorr<MF>' string, for
+            example 33 or 'errorr35'.
         to_numpy : bool, optional
             If True, return as numpy array. If False, return as pandas.DataFrame.
 
@@ -582,78 +758,27 @@ class GetCovariance():
         elif not isinstance(MT, list):
             raise ValueError(f"MT must be of type int or list, not {type(MT)}")
 
-        list_MF = []
-        if MF is None:
-            map_MF_2_MT = {}
-            for MF, MTs_in_MF in self.MFs2MTs.items():
-                # skipping MF=34 and MF=35
-                if MF == 'errorr34' or MF == 'errorr35':
-                    continue
+        if isinstance(MF, int):
+            MF = f'errorr{MF}'
+        elif not isinstance(MF, str):
+            raise ValueError(f"MF must be of type int or str, not {type(MF)}")
+        elif 'errorr' not in MF:
+            raise ValueError("If MF is str, it must be 'errorr<MF>'")
 
-                for val in MT:
-                    if val in MTs_in_MF:
-                        if MF not in list_MF:
-                            list_MF.append(MF)
-                        if MF not in map_MF_2_MT.keys():
-                            map_MF_2_MT[MF] = []
+        if MF not in self.MFs2MTs:
+            raise ValueError(f"MF={MF} not available in covariance matrix.")
 
-                        map_MF_2_MT[MF].append(val)
-
-        else:
-            map_MF_2_MT = {}
-            if isinstance(MF, int):
-                MF = f'errorr{MF}'
-            elif not isinstance(MF, str):
-                raise ValueError(f"MF must be of type int or str, not {type(MF)}")
-            elif 'errorr' not in MF:
-                raise ValueError("If MF is str, it must be 'errorr<MF>'")
-
-            list_MF.append(MF)
-
-            map_MF_2_MT[MF] = MT
-
-        # checl existence of requested MT
+        # check existence of requested MT in the selected MF
         for val in MT:
-            exists = False
-            for MTs in self.MFs2MTs.values():
-                if val in MTs:
-                    exists = True
-                    break
-            if not exists:
-                raise ValueError(f"MT={val} not available in covariance matrix.")
-
-        if single_cov:
-            if len(list_MF) != 1:
-                raise ValueError("Cannot get covariance between different MF sections!")
+            if val not in self.MFs2MTs[MF]:
+                raise ValueError(
+                    f"MT={val} not available in covariance matrix MF={MF}.")
 
         # --- get covariance
-        if not single_cov:
-            dict_df = {}
-
-        for iMF, MF in enumerate(list_MF):
-            if single_cov:
-                out_cov = self.rcov[MF].loc[(self.mat, MT[0]), (self.mat, MT[1])]
-            else:
-                dict_df[MF] = self.rcov[MF].loc[(self.mat, map_MF_2_MT[MF]), (self.mat, map_MF_2_MT[MF])]
-
-        if not single_cov:
-            idx = {}
-            col = {}
-            for ikey, key in enumerate(dict_df.keys()):
-                idx[key] = dict_df[key].index
-                col[key] = dict_df[key].columns
-                if ikey == 0:
-                    index = dict_df[key].index
-                    colum = dict_df[key].columns
-                else:
-                    index = index.union(dict_df[key].index)
-                    colum = colum.union(dict_df[key].columns)
-            # allocation of the empty dataframe
-            out_cov = pd.DataFrame(np.zeros((len(index), len(colum))), 
-                                    index=index, columns=colum)
-            # merge the dataframes
-            for key in dict_df.keys():
-                out_cov.loc[idx[key], col[key]] = dict_df[key].values
+        if single_cov:
+            out_cov = self.rcov[MF].loc[(self.mat, MT[0]), (self.mat, MT[1])]
+        else:
+            out_cov = self.rcov[MF].loc[(self.mat, MT), (self.mat, MT)]
 
         if to_numpy:
             return out_cov.to_numpy()
@@ -661,7 +786,8 @@ class GetCovariance():
             return out_cov
 
     @staticmethod
-    def sandy_calls_errorr(endf6_tape, zaid, temperature, group_structure, egridname, errorr_path, 
+    def sandy_calls_errorr(endf6_tape, zaid, temperature, group_structure,
+                           egridname, errorr_dir, errorr_name,
                            process_resonances, lib, author, njoy_ver):
         """
         Run the ERRORR module of NJOY via SANDY and save output files.
@@ -675,11 +801,15 @@ class GetCovariance():
         temperature : float
             Temperature in Kelvin.
         group_structure : iterable
-            Energy group structure.
+            Energy group structure in eV, as expected by NJOY/ERRORR.
         egridname : str
             Name of the energy grid.
-        errorr_path : pathlib.Path
-            Path to save ERRORR output.
+        errorr_dir : pathlib.Path
+            Directory where ERRORR output files are saved.
+        errorr_name : str
+            Base name used for generated ERRORR files.
+        process_resonances : bool
+            If True, set ERRORR to process resonance parameter covariances.
         lib : str
             Nuclear data library.
         author : str
@@ -692,51 +822,80 @@ class GetCovariance():
         errorr : dict
             Dictionary of ERRORR objects.
         """
-        if process_resonances:
-            irespr = 1
+        errorr_dir = Path(errorr_dir)
+        errorr_dir.mkdir(parents=True, exist_ok=True)
+
+        if errorr_dir.name == "errorr":
+            grid_dir = errorr_dir.parent
         else:
-            irespr = 0
+            grid_dir = errorr_dir
 
-        njoy_inp = endf6_tape.get_errorr(groupr_kws=dict(ek=group_structure), errorr_kws=dict(ek=group_structure, irespr=irespr), 
-                                         dryrun=True, temperature=temperature)
+        njoy_input_dir = grid_dir / "njoy_input"
+        njoy_output_dir = grid_dir / "njoy_output"
 
-        base_path = errorr_path.parent.parent
-        if not Path.exists(base_path.joinpath("njoy_input")):
-            os.mkdir(base_path.joinpath("njoy_input"))
+        njoy_input_dir.mkdir(parents=True, exist_ok=True)
+        njoy_output_dir.mkdir(parents=True, exist_ok=True)
 
-        with open(base_path.joinpath("njoy_input", errorr_path.name.replace('errorr', 'input')), "w") as f:
-            f.write(njoy_inp)
+        irespr = 1 if process_resonances else 0
 
-        # redirect stdout to a file
-        if not Path.exists(base_path.joinpath("njoy_output")):
-            os.mkdir(base_path.joinpath("njoy_output"))
-        
-        out_file_path = base_path.joinpath("njoy_output", errorr_path.name.replace('.errorr', '.log'))
+        if isinstance(group_structure, utils.EnergyGrid):
+            group_structure = group_structure.ev
 
-        GetCovariance.write_log_header(out_file_path, author, njoy_ver)
-        with open(out_file_path, "a") as out_file:
-            saved_stdout = os.dup(1)  # save current stdout file descriptor
+        groupr_kws = {"ek": group_structure}
+        errorr_kws = {"ek": group_structure, "irespr": irespr}
+
+        njoy_inp = endf6_tape.get_errorr(groupr_kws=groupr_kws,
+                                         errorr_kws=errorr_kws,
+                                         dryrun=True,
+                                         temperature=temperature)
+
+        input_name = errorr_name.replace(".errorr", ".input")
+        input_path = njoy_input_dir / input_name
+
+        with input_path.open("w") as stream:
+            stream.write(njoy_inp)
+
+        log_name = errorr_name.replace(".errorr", ".log")
+        log_path = njoy_output_dir / log_name
+
+        Covariance.write_log_header(log_path, author, njoy_ver)
+
+        with log_path.open("a") as out_file:
+            saved_stdout = os.dup(1)
+
             try:
-                # Redirect stdout to the log file
-                os.dup2(out_file.fileno(), 1)
 
-                # Call the method that produces output
+                os.dup2(out_file.fileno(), 1)
                 errorr = endf6_tape.get_errorr(
-                    groupr_kws=dict(ek=group_structure),
-                    errorr_kws=dict(ek=group_structure, irespr=irespr),
+                    groupr_kws=groupr_kws,
+                    errorr_kws=errorr_kws,
                     verbose=False,
-                    temperature=temperature
+                    temperature=temperature,
                 )
+
             finally:
-                # Restore the original stdout
                 os.dup2(saved_stdout, 1)
                 os.close(saved_stdout)
 
-        for ik, k in enumerate(errorr.keys()):
-            err_file_path = base_path.joinpath("errorr", errorr_path.name.replace('.errorr', f'.{k}'))
-            errorr[k].to_file(err_file_path)
+        saved_errorr = {}
 
-        return errorr
+        for key, tape in errorr.items():
+            # In SANDY the returned keys are normally strings such as
+            # "errorr31", "errorr33", ...
+            key_string = str(key)
+            if key_string.startswith("errorr"):
+                output_key = key_string
+                suffix = key_string
+            else:
+                output_key = f"errorr{key_string}"
+                suffix = output_key
+
+            output_path = errorr_dir / f"{errorr_name}{suffix.removeprefix('errorr')}"
+
+            tape.to_file(output_path)
+            saved_errorr[output_key] = tape
+
+        return saved_errorr
 
     @staticmethod
     def write_log_header(fname, author, njoy_ver):
@@ -757,14 +916,14 @@ class GetCovariance():
         None
         """
         if fname is None:
-            fname = "GetCov.log"
+            fname = "Covariance.log"
 
         # datetime object containing current date and time
-        sep = "".join(['-']*90)
+        sep = "".join(['-'] * 90)
         now = datetime.now()
         mmddyyhh = now.strftime("%B %d, %Y %H:%M:%S")
         with open(fname, "a") as f:
-            f.write(f"Log file generated with python class `GetCov`: \n")
+            f.write(f"Log file generated with python class `Covariance`: \n")
             f.write(f"{sep}\n")
             f.write(f"HOSTNAME: {socket.gethostname()} \n")
             try:
@@ -780,9 +939,21 @@ class GetCovariance():
             f.write(f"{sep}")
 
 
-class GetCovarianceError(Exception):
+class CovarianceError(Exception):
+    """Custom exception raised for covariance extraction and validation errors."""
+
     pass
 
+
+def _expose_public_aliases():
+    """Expose class symbols on the parent package for clean from-imports."""
+    parent = sys.modules.get(__package__)
+    if parent is not None:
+        parent.Covariance = Covariance
+        parent.CovarianceError = CovarianceError
+
+
+_expose_public_aliases()
 
 if __name__ == "__main__":
 
@@ -790,16 +961,16 @@ if __name__ == "__main__":
     eg_ecco33 = sandy.energy_grids.ECCO33
 
     mynuclides = {
-                310710 : "Ga-71",
-                922350 : "U-235",
-                922380 : "U-238",
-                942390 : "Pu-239",
-                }
+        310710: "Ga-71",
+        922350: "U-235",
+        922380: "U-238",
+        942390: "Pu-239",
+    }
 
     njoy_ver = 'njoy2016.78'
     author = 'Nicolò Abrate'
-    os.environ["NJOY"] = '/usr/local/bin/njoy2016' 
-    T = 300 # [K]
+    os.environ["NJOY"] = '/usr/local/bin/njoy2016'
+    T = 300  # [K]
 
     mycov = {}
     for lib in libs:
@@ -809,11 +980,15 @@ if __name__ == "__main__":
         for ZAid, ZAis in mynuclides.items():
             try:
                 print(f"Extracting covariance matrix for {ZAis}...")
-                mycov[lib][ZAis] = GetCovariance(ZAid, temperature=T, group_structure=eg_ecco33, 
-                                                egridname="ECCO-33", lib=lib, njoy_ver=njoy_ver,
-                                                author=author)
-                rcov_2_102 = mycov[lib][ZAis].get(MT=(2, 102))
-                np_cov = mycov[lib][ZAis].get(MT=[2, 18])
+                mycov[lib][ZAis] = Covariance(ZAid,
+                                              temperature=T,
+                                              group_structure=eg_ecco33,
+                                              egridname="ECCO-33",
+                                              lib=lib,
+                                              njoy_ver=njoy_ver,
+                                              author=author)
+                rcov_2_102 = mycov[lib][ZAis].get(MT=(2, 102), MF=33)
+                np_cov = mycov[lib][ZAis].get(MT=[2, 18], MF=33)
                 print(f"DONE")
             except KeyError:
                 print(f"FAILED")
@@ -821,5 +996,3 @@ if __name__ == "__main__":
             except IndexError:
                 print(f"FAILED")
                 continue
-
-
