@@ -19,6 +19,21 @@ To install pyNDUS, run the following commands:
 
 ---
 
+## Documentation
+
+The Sphinx documentation includes installation instructions, a user guide, mathematical background, API reference, and a description of the automated testing strategy.
+
+Build it locally with:
+
+```bash
+python -m pip install -r docs/requirements.txt
+sphinx-build -W -b html docs docs/_build/html
+```
+
+The repository includes a `.readthedocs.yaml` configuration for publication on Read the Docs.
+
+---
+
 ## ⚖️ License
 
 This package comes with the MIT license.
