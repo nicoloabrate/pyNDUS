@@ -1,6 +1,8 @@
 pyNDUS
 ======
 
+[![Documentation Status](https://app.readthedocs.org/projects/pyndus/badge/)](https://pyndus.readthedocs.io/)
+
 <!-- <p
     <a href='https://pyNDUS.readthedocs.io/en/latest/?badge=latest'>
         <img src='https://readthedocs.org/projects/pyNDUS/badge/?version=latest' alt='Documentation Status' />
@@ -21,7 +23,7 @@ To install pyNDUS, run the following commands:
 
 ## Documentation
 
-The Sphinx documentation includes installation instructions, a user guide, mathematical background, API reference, and a description of the automated testing strategy.
+The Sphinx documentation includes installation instructions, a user guide, mathematical background, API reference, and a description of the automated testing strategy and can be found on [ReadTheDocs](https://pyndus.readthedocs.io/).
 
 Build it locally with:
 
@@ -29,8 +31,6 @@ Build it locally with:
 python -m pip install -r docs/requirements.txt
 sphinx-build -W -b html docs docs/_build/html
 ```
-
-The repository includes a `.readthedocs.yaml` configuration for publication on Read the Docs.
 
 ---
 

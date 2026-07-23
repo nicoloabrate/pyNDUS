@@ -43,6 +43,9 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 # Tutorial notebooks depend on local benchmark data; render them without execution.
 nbsphinx_execute = "never"
 
+highlight_language = "python"
+pygments_style = "default"
+
 html_theme = "sphinx_rtd_theme"
 html_static_path = []
 html_title = "pyNDUS documentation"
