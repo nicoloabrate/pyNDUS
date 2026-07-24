@@ -45,19 +45,6 @@ Extract a sensitivity profile
 When relative standard deviations are available, ``get`` returns both the
 mean sensitivity profile and its relative standard deviation.
 
-Multiple Serpent sensitivity files can be merged into a single object when
-their energy-group structures are consistent:
-
-.. code-block:: python
-
-   sens = Sensitivity(
-       ["case_a_sens0.m", "case_b_sens0.m"],
-       duplicate_policy="raise",
-   )
-
-The available duplicate policies are ``"raise"``, ``"keep_first"``, and
-``"keep_last"``.
-
 Read a covariance matrix
 -----------------------
 
