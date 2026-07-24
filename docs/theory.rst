@@ -89,6 +89,20 @@ For identical systems and a non-zero denominator, :math:`r=1`. Unlike the
 unweighted similarity coefficient, representativity incorporates the relative
 importance and correlation structure of the nuclear-data uncertainties.
 
+In pyNDUS the displayed ZA/MF/MT matrix contains additive contributions to this
+single globally normalized coefficient. The total representativity is
+
+.. math::
+
+   r_{\mathrm{total}} = \sum_{z,i,j} r_{z,ij}.
+
+When the isotope sets differ, absent sensitivity profiles are treated as zero
+in the numerator, so only their intersection contributes there. The
+normalization terms remain the complete uncertainty of each system: isotopes
+exclusive to the first or second system contribute respectively to
+:math:`\mathbf{S}_1^{\mathrm{T}}\mathbf{C}\mathbf{S}_1` or
+:math:`\mathbf{S}_2^{\mathrm{T}}\mathbf{C}\mathbf{S}_2`.
+
 ERRORR MF and MT organization
 -----------------------------
 

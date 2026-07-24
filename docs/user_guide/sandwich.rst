@@ -85,6 +85,38 @@ Representativity requires two sensitivity objects and a covariance dictionary.
 The same covariance treatment must be applied consistently to the numerator and
 the two normalization terms.
 
+``representativity`` is a matrix decomposition of the normalized numerator into
+ZA/MF/MT-pair contributions. Its elements are not independent representativity
+coefficients. The physical total coefficient is exposed directly as
+``representativity_total``, with one value per response:
+
+.. math::
+
+   r_{\mathrm{total}} =
+   \sum_{z,i,j}
+   \frac{\mathbf{S}_{A,z,i}^{\mathrm{T}}
+         \mathbf{C}_{z,ij}\mathbf{S}_{B,z,j}}
+        {\sqrt{\mathbf{S}_A^{\mathrm{T}}\mathbf{C}\mathbf{S}_A}
+         \sqrt{\mathbf{S}_B^{\mathrm{T}}\mathbf{C}\mathbf{S}_B}}.
+
+The numerator receives non-zero contributions only from profiles present in
+both systems. With ``list_za=None``, each denominator nevertheless uses the
+full isotope set of its own system. Thus isotopes present exclusively in A or
+B contribute to that system's total uncertainty, but not to the numerator.
+
+.. code-block:: python
+
+   result = Sandwich(
+       system_a,
+       sens2=system_b,
+       covmat=covariances,
+       representativity=True,
+   )
+   print(result.representativity_total)
+
+The detailed decomposition remains available through ``representativity`` and
+``representativity_table``.
+
 Missing-covariance policies
 ---------------------------
 

@@ -241,6 +241,10 @@ class Sandwich:
         Total variance and standard deviation for each response/material,
         obtained by summing all selected ZA/MF/MT contributions before taking
         the square root.
+    representativity_total : pandas.Series
+        Total representativity coefficient for each response, obtained by
+        summing the normalized ZA/MF/MT-pair contributions in
+        ``representativity_table``.
     *_table : pandas.DataFrame
         Long MF-resolved result table.
     *_by_mf : pandas.DataFrame
@@ -815,6 +819,37 @@ class Sandwich:
                 raise ValueError(
                     f"values of 'za' dict must be str, not {type(zais)}")
         self._za = value
+
+    @property
+    def representativity_total(self):
+        """
+        Return the total representativity coefficient for each response.
+
+        Entries in ``representativity_table`` are contributions to one
+        globally normalized coefficient. The physical representativity is
+        therefore their sum over all selected ZA, MF, MT-row, and MT-column
+        values. The returned Series always keeps RESPONSE as its index, even
+        when only one response was requested.
+
+        Returns
+        -------
+        pandas.Series
+            Total representativity indexed by response.
+        """
+        if not hasattr(self, "representativity_table"):
+            raise AttributeError(
+                "'representativity_total' is available only after a "
+                "representativity calculation.")
+
+        totals = {}
+        values = self.representativity_table["value"]
+        for response, contributions in values.groupby(
+                level="RESPONSE", sort=False):
+            totals[response] = sum(contributions.tolist(), 0.0)
+
+        return pd.Series(
+            totals, name="representativity_total",
+            index=pd.Index(totals.keys(), name="RESPONSE"))
 
     def get_result_table(self, quantity=None, response=None, material=None, ZA=None,
                          MF=None, MT=None):
