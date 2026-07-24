@@ -267,6 +267,73 @@ def test_representativity_one_single_mt():
     npt.assert_allclose(got, 1.0, rtol=1e-14, atol=0.0)
 
 
+def test_total_representativity_uses_full_system_uncertainties():
+    """Sum all contributions while normalizing with each system's full ZA set."""
+    common, only_a, only_b = 10010, 10020, 10030
+    za_dict = {
+        common: "common",
+        only_a: "A-only",
+        only_b: "B-only",
+    }
+    list_resp = ["keff"]
+    mf = "errorr33"
+    mt = 18
+    map_MF2MT = {
+        za: {mf: [mt]}
+        for za in (common, only_a, only_b)
+    }
+
+    sens_a = FakeSensitivity(
+        {
+            ("keff", "total", common, mt): np.array([1.0, 0.0]),
+            ("keff", "total", only_a, mt): np.array([2.0, 0.0]),
+        },
+        n_groups=2,
+        reader="serpent",
+    )
+    sens_b = FakeSensitivity(
+        {
+            ("keff", "total", common, mt): np.array([3.0, 0.0]),
+            ("keff", "total", only_b, mt): np.array([4.0, 0.0]),
+        },
+        n_groups=2,
+        reader="serpent",
+    )
+    covariance = np.eye(2)
+    covmat = {
+        za: FakeCovZA({mf: {(mt, mt): covariance}})
+        for za in (common, only_a, only_b)
+    }
+
+    repr_df, _ = Sandwich.compute_representativity(
+        sens=sens_a,
+        sens2=sens_b,
+        covmat=covmat,
+        list_resp=list_resp,
+        map_MF2MT=map_MF2MT,
+        za_dict=za_dict,
+        sens_MC=False,
+        sigma=1,
+    )
+
+    result = object.__new__(Sandwich)
+    result.representativity_table = repr_df.attrs["table"]
+    got = result.representativity_total.loc["keff"]
+
+    numerator = 1.0 * 3.0
+    variance_a = 1.0**2 + 2.0**2
+    variance_b = 3.0**2 + 4.0**2
+    expected = numerator / np.sqrt(variance_a * variance_b)
+
+    npt.assert_allclose(got, expected, rtol=1e-14, atol=0.0)
+    npt.assert_allclose(
+        repr_df.to_numpy(dtype=float).sum(),
+        expected,
+        rtol=1e-14,
+        atol=0.0,
+    )
+
+
 def test_representativity_missing_covariance_zero_policy_returns_nan():
     """Return NaN representativity when zero missing covariance makes norm zero."""
     za = 922350
