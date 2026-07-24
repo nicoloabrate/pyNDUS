@@ -42,12 +42,15 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 # Tutorial notebooks depend on local benchmark data; render them without execution.
 nbsphinx_execute = "never"
+# Use a built-in lexer as fallback for notebook code cells on hosted builds.
+nbsphinx_codecell_lexer = "python3"
 
 highlight_language = "python"
 pygments_style = "default"
 
 html_theme = "sphinx_rtd_theme"
-html_static_path = []
+html_static_path = ["_static"]
+html_css_files = ["notebook-syntax.css"]
 html_title = "pyNDUS documentation"
 
 intersphinx_mapping = {

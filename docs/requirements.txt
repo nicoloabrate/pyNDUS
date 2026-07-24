@@ -2,3 +2,7 @@ sphinx>=7,<9
 sphinx-rtd-theme>=2,<4
 nbsphinx>=0.9,<1
 nbconvert>=7,<9
+ipython-pygments-lexers>=1,<2
+ipython
+ipykernel
+pygments

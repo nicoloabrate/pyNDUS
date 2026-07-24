@@ -1,0 +1,55 @@
+/* Keep nbsphinx code cells visibly highlighted with the Read the Docs theme. */
+div.nbinput.container div.input_area .highlight {
+    background: #f8f8f8;
+}
+
+div.nbinput.container div.input_area .highlight .c,
+div.nbinput.container div.input_area .highlight .c1,
+div.nbinput.container div.input_area .highlight .cm,
+div.nbinput.container div.input_area .highlight .sd {
+    color: #3D7B7B;
+    font-style: italic;
+}
+
+div.nbinput.container div.input_area .highlight .k,
+div.nbinput.container div.input_area .highlight .kc,
+div.nbinput.container div.input_area .highlight .kn,
+div.nbinput.container div.input_area .highlight .ow {
+    color: #008000;
+    font-weight: 700;
+}
+
+div.nbinput.container div.input_area .highlight .nb,
+div.nbinput.container div.input_area .highlight .bp {
+    color: #008000;
+}
+
+div.nbinput.container div.input_area .highlight .s,
+div.nbinput.container div.input_area .highlight .s1,
+div.nbinput.container div.input_area .highlight .s2,
+div.nbinput.container div.input_area .highlight .sa,
+div.nbinput.container div.input_area .highlight .se,
+div.nbinput.container div.input_area .highlight .si {
+    color: #BA2121;
+}
+
+div.nbinput.container div.input_area .highlight .m,
+div.nbinput.container div.input_area .highlight .mi,
+div.nbinput.container div.input_area .highlight .mf {
+    color: #666666;
+}
+
+div.nbinput.container div.input_area .highlight .nf,
+div.nbinput.container div.input_area .highlight .fm {
+    color: #0000FF;
+}
+
+div.nbinput.container div.input_area .highlight .nn,
+div.nbinput.container div.input_area .highlight .nc {
+    color: #0000FF;
+    font-weight: 700;
+}
+
+div.nbinput.container div.input_area .highlight .o {
+    color: #666666;
+}
