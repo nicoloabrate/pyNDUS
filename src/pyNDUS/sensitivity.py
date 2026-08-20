@@ -23,6 +23,84 @@ except ModuleNotFoundError:  # when run as a script
     except ImportError:
         import utils
 
+SERPENT_NUMERIC_ENDF_CHANNELS = {
+    452: {
+        "label": "nubar total",
+        "MF": 1,
+        "MT": 452,
+        "covariance_MF": 31,
+        "covariance_MTs": (452, ),
+    },
+    455: {
+        "label": "nubar delayed",
+        "MF": 1,
+        "MT": 455,
+        "covariance_MF": 31,
+        "covariance_MTs": (455, ),
+    },
+    456: {
+        "label": "nubar prompt",
+        "MF": 1,
+        "MT": 456,
+        "covariance_MF": 31,
+        "covariance_MTs": (456, ),
+    },
+}
+
+SERPENT_ENDF_CHANNELS = {
+    "nubar total": {
+        "MF": 1,
+        "MT": 452,
+        "covariance_MF": 31,
+        "covariance_MTs": (452, ),
+    },
+    "nubar prompt": {
+        "MF": 1,
+        "MT": 456,
+        "covariance_MF": 31,
+        "covariance_MTs": (456, ),
+    },
+    "nubar delayed": {
+        "MF": 1,
+        "MT": 455,
+        "covariance_MF": 31,
+        "covariance_MTs": (455, ),
+    },
+    "chi total": {
+        "MF": None,
+        "MT": None,
+        "covariance_MF": None,
+        "covariance_MTs": (),
+        "derived": True,
+    },
+    "chi prompt": {
+        "MF": 5,
+        "MT": 18,
+        "covariance_MF": 35,
+        "covariance_MTs": (18, ),
+    },
+    "chi delayed": {
+        "MF": 5,
+        "MT": 455,
+        "covariance_MF": 35,
+        "covariance_MTs": (455, ),
+    },
+    "ela leg mom 1": {
+        "MF": 4,
+        "MT": 2,
+        "L": 1,
+        "covariance_MF": 34,
+        "covariance_MTs": (2, 251),
+    },
+    "ela leg mom 2": {
+        "MF": 4,
+        "MT": 2,
+        "L": 2,
+        "covariance_MF": 34,
+        "covariance_MTs": (2, ),
+    },
+}
+
 
 class Sensitivity(SensitivityAlgebraMixin):
     """
@@ -768,10 +846,27 @@ class Sensitivity(SensitivityAlgebraMixin):
                 "for 'Sensitivity.MTs'")
 
         MTs = OrderedDict()
+        endf_channels = OrderedDict()
 
         for imt, mt in enumerate(value):
+            # numeric Serpent perturbations
             if isinstance(mt, (int, np.integer)):
-                MTs[int(mt)] = imt
+                mt = int(mt)
+                MTs[mt] = imt
+
+                channel = SERPENT_NUMERIC_ENDF_CHANNELS.get(mt)
+
+                if channel is not None:
+                    endf_channels[mt] = channel.copy()
+                else:
+                    endf_channels[mt] = {
+                        "label": f"xs {mt}",
+                        "MF": 3,
+                        "MT": mt,
+                        "covariance_MF": 33,
+                        "covariance_MTs": (mt, ),
+                    }
+
                 continue
 
             if not isinstance(mt, str):
@@ -779,25 +874,89 @@ class Sensitivity(SensitivityAlgebraMixin):
                     f"Serpent MT descriptors must be strings or integers, "
                     f"not {type(mt)}")
 
-            if "xs" in mt:
-                if "total" not in mt:
-                    MTs[int(mt.split(" ")[1])] = imt
-                else:
-                    MTs[1] = imt
+            # string Serpent perturbations
+            label = " ".join(mt.split()).lower()
 
-            elif "nubar" in mt:
-                if mt == "nubar total":
-                    MTs[452] = imt
-                elif mt == "nubar delayed":
-                    MTs[455] = imt
-                elif mt == "nubar prompt":
-                    MTs[456] = imt
+            if "xs" in label:
+                if "total" not in label:
+                    key = int(label.split(" ")[1])
+                else:
+                    key = 1
+                MTs[key] = imt
+                endf_channels[key] = {
+                    "label": label,
+                    "MF": 3,
+                    "MT": key,
+                    "covariance_MF": 33,
+                    "covariance_MTs": (key, ),
+                }
+
+            elif "nubar" in label:
+                if label == "nubar total":
+                    key = 452
+                elif label == "nubar delayed":
+                    key = 455
+                elif label == "nubar prompt":
+                    key = 456
+                else:
+                    key = label
+                MTs[key] = imt
+                channel = SERPENT_ENDF_CHANNELS.get(label)
+                if channel is not None:
+                    endf_channels[key] = {"label": label, **channel}
 
             else:
-                # TODO FIXME define an MT number for fission emission spectra
-                MTs[mt] = imt
+                key = label
+                MTs[key] = imt
+                channel = SERPENT_ENDF_CHANNELS.get(label)
+                if channel is not None:
+                    endf_channels[key] = {"label": label, **channel}
+                else:
+                    endf_channels[key] = {
+                        "label": label,
+                        "MF": None,
+                        "MT": None,
+                        "covariance_MF": None,
+                        "covariance_MTs": (),
+                    }
 
         self._MTs = MTs
+        self._endf_channels = endf_channels
+
+    @property
+    def endf_channels(self):
+        """
+        Mapping from sensitivity keys to their ENDF quantity/covariance channel.
+
+        Serpent uses descriptive perturbation names for quantities that do not
+        have a unique ENDF MT. This metadata keeps the Serpent key separate
+        from the ENDF covariance channel used by sandwich calculations.
+        """
+        return getattr(self, "_endf_channels", OrderedDict())
+
+    def get_covariance_sensitivity_keys(self, covariance_MF, covariance_MT):
+        """
+        Return sensitivity keys compatible with one ENDF covariance channel.
+
+        Parameters
+        ----------
+        covariance_MF : int
+            Covariance file number, e.g. 33, 34, or 35.
+        covariance_MT : int
+            Covariance MT number.
+
+        Returns
+        -------
+        list
+            Sensitivity keys accepted by :meth:`get`.
+        """
+        keys = []
+        for key, channel in self.endf_channels.items():
+            if channel.get("covariance_MF") != covariance_MF:
+                continue
+            if covariance_MT in channel.get("covariance_MTs", ()):
+                keys.append(key)
+        return keys
 
     @property
     def energy_unit(self):
@@ -1218,7 +1377,13 @@ class Sensitivity(SensitivityAlgebraMixin):
 
         self._sens_rsd = sens_rsd
 
-    def get(self, resp=None, mat=None, MT=None, za=None, g=None, group_order='ascending'):
+    def get(self,
+            resp=None,
+            mat=None,
+            MT=None,
+            za=None,
+            g=None,
+            group_order='ascending'):
         """
         Extract sensitivity profiles and uncertainties for specified parameters.
 
@@ -1689,9 +1854,13 @@ class Sensitivity(SensitivityAlgebraMixin):
                     for za in obj.zaid:
                         for mt in obj.MTs:
                             try:
-                                out = obj.get(resp=[resp], mat=[mat], MT=[mt], za=[za],
-                                              group_order="ascending",
-                                              )
+                                out = obj.get(
+                                    resp=[resp],
+                                    mat=[mat],
+                                    MT=[mt],
+                                    za=[za],
+                                    group_order="ascending",
+                                )
                             except (KeyError, ValueError) as exc:
                                 raise SensitivityError(
                                     "Could not retrieve sensitivity profile "
