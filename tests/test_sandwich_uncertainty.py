@@ -6,6 +6,7 @@ import numpy.testing as npt
 
 import pyNDUS.sandwich as sandwich_module
 from pyNDUS.sandwich import Sandwich
+from pyNDUS.sensitivity import Sensitivity
 
 
 class FakeSensitivity:
@@ -92,6 +93,29 @@ class FakeCovZAForInit(FakeCovZA):
                         for mt in pair})
             for mf, mats in mats_by_mf.items()
         }
+
+
+def _real_serpent_sensitivity(perturbations,
+                              profiles,
+                              za=922350,
+                              material="fuel"):
+    """Build a minimal real Sensitivity object with Serpent channel metadata."""
+    sens = object.__new__(Sensitivity)
+    sens.reader = "serpent"
+    sens.responses = ["keff"]
+    sens.materials = [material]
+    sens.zaid = [za]
+    sens.zais = sens.zaid.keys()
+    sens.MTs = perturbations
+    sens.energy_unit = "MeV"
+    sens.group_structure = [1.0e-11, 1.0e-7, 1.0]
+
+    data = np.zeros((1, 1, 1, len(sens.MTs), sens.n_groups))
+    for key, profile in profiles.items():
+        data[0, 0, 0, sens.MTs[key], :] = profile
+    sens._sens = data
+    sens._sens_rsd = None
+    return sens
 
 
 def _get_df_value(df_matrix, resp, mat, za_label, mt_row, mt_col):
@@ -198,10 +222,99 @@ def test_sandwich_constructor_keeps_explicit_mf35(monkeypatch):
     npt.assert_allclose(got, expected, rtol=1e-14, atol=0.0)
 
 
+def test_mf35_mt18_uses_chi_prompt_not_fission_xs(monkeypatch):
+    """Resolve MF35/MT18 to Serpent chi prompt, not the MF33 fission XS."""
+    monkeypatch.setattr(sandwich_module, "Covariance", FakeCovZAForInit)
+
+    za = 922350
+    xs = np.array([100.0, 100.0])
+    chi_prompt = np.array([0.5, -0.2])
+    C = np.diag([0.1, 0.2])
+
+    sens = _real_serpent_sensitivity(
+        ["xs 18", "chi prompt"],
+        {
+            18: xs,
+            "chi prompt": chi_prompt
+        },
+        za=za,
+    )
+    covmat = {za: FakeCovZAForInit({"errorr35": {(18, 18): C}})}
+
+    sand = Sandwich(
+        sens=sens,
+        covmat=covmat,
+        list_resp=["keff"],
+        list_mat=["fuel"],
+        list_za=[za],
+        list_MTs=[18],
+        list_MFs=[35],
+        include_MF=True,
+    )
+
+    expected = float(chi_prompt.T @ C @ chi_prompt)
+    got = sand.uncertainty.loc[("keff", "fuel", "U-235", 35, 18), 18]
+
+    npt.assert_allclose(got, expected, rtol=1e-14, atol=0.0)
+
+
+def test_mf34_mt251_uses_elastic_legendre_moment_1(monkeypatch):
+    """Resolve reduced MF34/MT251 covariance to Serpent ela leg mom 1."""
+    monkeypatch.setattr(sandwich_module, "Covariance", FakeCovZAForInit)
+
+    za = 922350
+    xs = np.array([100.0, 100.0])
+    leg1 = np.array([0.3, 0.4])
+    C = np.diag([0.5, 0.25])
+
+    sens = _real_serpent_sensitivity(
+        ["xs 2", "ela leg mom 1"],
+        {
+            2: xs,
+            "ela leg mom 1": leg1
+        },
+        za=za,
+    )
+    covmat = {za: FakeCovZAForInit({"errorr34": {(251, 251): C}})}
+
+    sand = Sandwich(
+        sens=sens,
+        covmat=covmat,
+        list_resp=["keff"],
+        list_mat=["fuel"],
+        list_za=[za],
+        list_MTs=[2],
+        list_MFs=[34],
+        include_MF=True,
+    )
+
+    expected = float(leg1.T @ C @ leg1)
+    got = sand.uncertainty.loc[("keff", "fuel", "U-235", 34, 251), 251]
+
+    assert sand.MFs2MTs == {za: {"errorr34": [251]}}
+    npt.assert_allclose(got, expected, rtol=1e-14, atol=0.0)
+
+
+def test_numeric_serpent_nubar_channels_are_mf1_not_mf3():
+    """Keep numeric Serpent nubar perturbations mapped to MF1/MF31."""
+    sens = object.__new__(Sensitivity)
+    sens.reader = "serpent"
+    sens.MTs = [452, 455, 456]
+
+    assert sens.endf_channels[452]["MF"] == 1
+    assert sens.endf_channels[455]["MF"] == 1
+    assert sens.endf_channels[456]["MF"] == 1
+    assert sens.get_covariance_sensitivity_keys(31, 452) == [452]
+    assert sens.get_covariance_sensitivity_keys(31, 455) == [455]
+    assert sens.get_covariance_sensitivity_keys(31, 456) == [456]
+    assert sens.get_covariance_sensitivity_keys(33, 452) == []
+    assert sens.get_covariance_sensitivity_keys(33, 455) == []
+    assert sens.get_covariance_sensitivity_keys(33, 456) == []
+
+
 def test_uncertainty_signed_sqrt_and_total_standard_deviation(monkeypatch):
     """Expose signed roots per term and root the sum for the total deviation."""
-    monkeypatch.setattr(sandwich_module, "Sensitivity",
-                        FakeSensitivityForInit)
+    monkeypatch.setattr(sandwich_module, "Sensitivity", FakeSensitivityForInit)
     monkeypatch.setattr(sandwich_module, "Covariance", FakeCovZAForInit)
 
     za = 922350
@@ -253,25 +366,24 @@ def test_uncertainty_signed_sqrt_and_total_standard_deviation(monkeypatch):
         (mt2, mt2): 3.0,
     }
     for (mt_row, mt_col), expected in expected_signed.items():
-        got = sand.uncertainty.loc[
-            ("keff", "fuel", label, 33, mt_row), mt_col]
+        got = sand.uncertainty.loc[("keff", "fuel", label, 33, mt_row), mt_col]
         npt.assert_allclose(got, expected, rtol=1e-14, atol=0.0)
 
-    variance_12 = sand.uncertainty_variance.loc[
-        ("keff", "fuel", label, 33, mt1), mt2]
+    variance_12 = sand.uncertainty_variance.loc[("keff", "fuel", label, 33,
+                                                 mt1), mt2]
     npt.assert_allclose(variance_12, -4.0, rtol=1e-14, atol=0.0)
 
     summary = sand.uncertainty_standard_deviation.loc[("keff", "fuel")]
     npt.assert_allclose(summary["variance"], 5.0, rtol=1e-14, atol=0.0)
-    npt.assert_allclose(
-        summary["standard_deviation"], np.sqrt(5.0),
-        rtol=1e-14, atol=0.0)
+    npt.assert_allclose(summary["standard_deviation"],
+                        np.sqrt(5.0),
+                        rtol=1e-14,
+                        atol=0.0)
 
 
 def test_uncertainty_output_rejects_unknown_representation(monkeypatch):
     """Reject uncertainty output representations that are not documented."""
-    monkeypatch.setattr(sandwich_module, "Sensitivity",
-                        FakeSensitivityForInit)
+    monkeypatch.setattr(sandwich_module, "Sensitivity", FakeSensitivityForInit)
     monkeypatch.setattr(sandwich_module, "Covariance", FakeCovZAForInit)
 
     za = 922350
@@ -281,12 +393,7 @@ def test_uncertainty_output_rejects_unknown_representation(monkeypatch):
         {("keff", "fuel", za, mt): np.array([1.0, 0.0])},
         n_groups=2,
     )
-    covmat = {
-        za:
-        FakeCovZAForInit({
-            mf: {(mt, mt): np.eye(2)}
-        })
-    }
+    covmat = {za: FakeCovZAForInit({mf: {(mt, mt): np.eye(2)}})}
 
     with pytest.raises(ValueError, match="uncertainty_output"):
         Sandwich(

@@ -941,7 +941,7 @@ class Sensitivity(SensitivityAlgebraMixin):
         Parameters
         ----------
         covariance_MF : int
-            Covariance file number, e.g. 33, 34, or 35.
+            Covariance file number, e.g. 31, 33, 34, or 35.
         covariance_MT : int
             Covariance MT number.
 
