@@ -17,6 +17,61 @@ The object stores responses, materials, nuclides, MT identifiers, group
 boundaries, mean sensitivity profiles, and—when available—the relative standard
 deviations reported by the source calculation.
 
+Serpent perturbations and ENDF channels
+---------------------------------------
+
+Serpent reports some perturbations with descriptive names instead of plain
+ENDF MT numbers. For example, ``chi prompt`` and ``ela leg mom 1`` are not
+cross-section perturbations even though they are related to reactions that also
+use familiar MT numbers.
+
+For this reason, ``Sensitivity.MTs`` should be read as the set of sensitivity
+profile keys, not as a complete ENDF covariance identifier. Serpent
+sensitivities also expose ``endf_channels``, which records the ENDF quantity
+and the covariance channel used by ``Sandwich``:
+
+.. code-block:: python
+
+   sens = Sensitivity("case_sens0.m")
+
+   print(sens.MTs)
+   print(sens.endf_channels["chi prompt"])
+   print(sens.get_covariance_sensitivity_keys(35, 18))
+
+The main Serpent mappings are:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Serpent key
+     - ENDF quantity
+     - Covariance channel
+   * - ``nubar total``
+     - MF=1, MT=452
+     - MF=31, MT=452
+   * - ``nubar prompt``
+     - MF=1, MT=456
+     - MF=31, MT=456
+   * - ``nubar delayed``
+     - MF=1, MT=455
+     - MF=31, MT=455
+   * - ``chi prompt``
+     - MF=5, MT=18
+     - MF=35, MT=18
+   * - ``chi delayed``
+     - MF=5, MT=455
+     - MF=35, MT=455
+   * - ``ela leg mom 1``
+     - MF=4, MT=2, L=1
+     - MF=34, MT=251 or MF=34, MT=2, L=1
+   * - ``ela leg mom 2``
+     - MF=4, MT=2, L=2
+     - not propagated by the current MF34 implementation
+
+``chi total`` is a derived quantity and has no single ENDF covariance MT.
+Numeric Serpent perturbations ``452``, ``455``, and ``456`` are treated as
+MF=1 nubar quantities with MF=31 covariances, not as MF=3 cross sections.
+
 Multi-file Serpent input
 ------------------------
 

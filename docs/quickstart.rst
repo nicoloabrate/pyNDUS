@@ -46,7 +46,7 @@ When relative standard deviations are available, ``get`` returns both the
 mean sensitivity profile and its relative standard deviation.
 
 Read a covariance matrix
------------------------
+------------------------
 
 .. code-block:: python
 
@@ -65,7 +65,7 @@ Read a covariance matrix
 
 
 Extract a covariance sub-matrix
------------------------------
+-------------------------------
 
 .. code-block:: python
 
@@ -74,6 +74,10 @@ Extract a covariance sub-matrix
     cov_pair = cov_Pu239.get([18, 102], MF=33)
 
 MF section is a mandatory argument to select the proper MT-MF couple.
+For Serpent sensitivities this matters because the same MT number can refer to
+different quantities in different covariance files: MF=33/MT=18 is fission
+cross section, while MF=35/MT=18 is ``chi prompt``. The reduced angular
+covariance MF=34/MT=251 is treated as ``ela leg mom 1`` only.
 
 Run a sandwich calculation
 --------------------------
@@ -92,4 +96,4 @@ Run a sandwich calculation
 The default Sandwich ``calculation_type`` is ``uncertainty`` but also ``representativity`` and ``similariy`` are available.
 The covariance dictionary must contain compatible ``Covariance`` objects.
 See :doc:`user_guide/sandwich` for the calculation modes and missing-covariance
-policies. 
+policies.

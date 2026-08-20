@@ -111,3 +111,53 @@ example, cross-section covariances are generally associated with MF=33, while
 neutron-multiplicity covariances are associated with MF=31. A given normalized
 MT is assigned to one MF section in the package mapping, avoiding ambiguous
 accumulation of the same parameter across multiple MF sections.
+
+For common ENDF quantities, the covariance file is not the same as the file
+that stores the mean quantity:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Quantity file
+     - Quantity
+     - Covariance file
+   * - MF=1
+     - neutron multiplicities, such as MT=452, 455, 456
+     - MF=31
+   * - MF=3
+     - cross sections
+     - MF=33
+   * - MF=4
+     - angular distributions
+     - MF=34
+   * - MF=5
+     - energy distributions, such as fission spectra
+     - MF=35
+
+This distinction is especially important for Serpent perturbations that are
+identified by names rather than by a unique ENDF MT. ``chi prompt`` is matched
+to MF=35, MT=18, while ``xs 18`` is matched to MF=33, MT=18.
+
+MF34 and the reduced MT251 angular covariance
+---------------------------------------------
+
+MT=251 is the average scattering cosine, :math:`\bar{\mu}`. For an angular
+distribution represented by Legendre coefficients,
+
+.. math::
+
+   f(\mu) = \sum_l \frac{2l+1}{2} a_l P_l(\mu),
+
+the first coefficient satisfies :math:`\bar{\mu}=a_1`. Therefore an
+MF34/MT251 covariance is a reduced covariance for the first elastic Legendre
+moment only. pyNDUS maps this block to the Serpent perturbation
+``ela leg mom 1``.
+
+The current implementation does not propagate Legendre moments beyond
+:math:`L=1`. Full MF34/MT2 covariance data can in principle contain several
+Legendre orders, but pyNDUS covariance matrices are currently indexed by MF
+and MT only, not by :math:`L`. If such a covariance channel is requested and
+would require choosing between multiple Legendre sensitivities, pyNDUS raises
+an explicit error rather than assuming the wrong moment. Support for
+``ela leg mom 2`` and higher requires an L-resolved MF34 covariance
+representation.

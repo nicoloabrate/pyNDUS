@@ -23,8 +23,15 @@ except PackageNotFoundError:
 version = release
 
 extensions = [
-    "sphinx.ext.autodoc", "sphinx.ext.autosummary", "sphinx.ext.intersphinx", "sphinx.ext.mathjax",
-    "sphinx.ext.napoleon", "sphinx.ext.viewcode", "nbsphinx", ]
+    "sphinx.ext.autodoc",
+    "sphinx.ext.autosummary",
+    "sphinx.ext.intersphinx",
+    "sphinx.ext.mathjax",
+    "sphinx.ext.napoleon",
+    "sphinx.ext.viewcode",
+    "nbsphinx",
+    "sphinx_copybutton",
+]
 
 autosummary_generate = True
 autodoc_typehints = "description"
@@ -47,6 +54,12 @@ nbsphinx_codecell_lexer = "python3"
 
 highlight_language = "python"
 pygments_style = "default"
+
+# Add a copy button to code blocks, including notebook code cells rendered by
+# nbsphinx. Prompt markers are stripped from copied text.
+copybutton_prompt_text = r">>> |\.\.\. |\$ |In \[\d*\]: | {2,5}\.\.\.: "
+copybutton_prompt_is_regexp = True
+copybutton_remove_prompts = True
 
 html_theme = "sphinx_rtd_theme"
 html_static_path = ["_static"]

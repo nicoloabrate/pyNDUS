@@ -57,6 +57,38 @@ A negative total variance has no real standard deviation and is reported as
 ``NaN``. Individual negative cross terms are expected and remain visible
 through their negative signed square roots.
 
+Serpent covariance-channel matching
+-----------------------------------
+
+When the sensitivity object comes from Serpent, ``Sandwich`` matches
+covariances to sensitivities by covariance ``(MF, MT)`` channel rather than by
+MT alone. This avoids ambiguous cases where the same MT value appears in
+different ENDF files. For example:
+
+* MF=33, MT=18 is matched to the fission cross-section sensitivity ``xs 18``.
+* MF=35, MT=18 is matched to ``chi prompt``.
+* MF=31, MT=452/455/456 is matched to the corresponding nubar sensitivity.
+* MF=34, MT=251 is matched to ``ela leg mom 1``.
+
+The MF34 angular-distribution treatment is deliberately limited. pyNDUS
+currently supports only the reduced MF34/MT251 representation, which
+corresponds to the first elastic Legendre moment
+:math:`L=1` (:math:`\bar{\mu}=a_1`). This is equivalent to using the
+``ela leg mom 1`` Serpent sensitivity.
+
+Higher Legendre moments are not propagated at present. If an MF34 covariance
+requires resolving MF34/MT2 into multiple Legendre orders, pyNDUS raises an
+explicit error instead of silently pairing the covariance with the wrong
+Serpent sensitivity. In practice, many ERRORR-processed covariance sets expose
+only MT251 for this reduced angular term, but analyses that require
+``ela leg mom 2`` or higher need an L-resolved covariance representation.
+
+Selections are interpreted against both the physical quantity and the stored
+covariance MT. Therefore ``list_MTs=[2]`` can select an available
+MF34/MT251 block for ``ela leg mom 1``; ``list_MTs=[251]`` selects the same
+reduced covariance block directly. Use ``list_MFs=[34]`` or
+``list_MFs=[35]`` when these non-default covariance files should be included.
+
 Similarity calculations
 -----------------------
 
