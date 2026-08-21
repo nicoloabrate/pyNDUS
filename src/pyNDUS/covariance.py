@@ -134,6 +134,10 @@ class Covariance():
             If True, use ``cwd`` as a database root and create/read the
             library and energy-grid subdirectories. If False, read existing
             ERRORR files from ``cwd`` or generate missing files there.
+            Existing ERRORR files may use the historical
+            ``<ZAIS>_<temperature>K.errorr<MF>`` name or temperature-free
+            names such as ``<ZAIS>.errorr<MF>``, ``<ZAID>0.errorr<MF>``, and
+            ``<ZAID>.errorr<MF>``.
         cwd : str or pathlib.Path, optional
             Working directory for storing or reading files.
         """
@@ -162,6 +166,8 @@ class Covariance():
 
         mf_numbers = (31, 33, 34, 35)
         errorr_name = f"{self.zais}_{temperature:g}K.errorr"
+        errorr_names = Covariance._errorr_name_candidates(
+            self.zais, self.zaid, temperature)
 
         errorr_out = {}
 
@@ -185,10 +191,10 @@ class Covariance():
                 endf6_tape.to_file(endf6_path)
 
             # Load all ERRORR files already available.
-            for mf in mf_numbers:
-                path = errorr_dir / f"{errorr_name}{mf}"
-                if path.exists():
-                    errorr_out[f"errorr{mf}"] = sandy.Errorr.from_file(path)
+            errorr_out.update(
+                Covariance._read_existing_errorr_files(errorr_dir,
+                                                       errorr_names,
+                                                       mf_numbers))
 
             # Run ERRORR when no processed file is available.
             #
@@ -219,22 +225,20 @@ class Covariance():
 
                 # Read the files from disk, including any files created by ERRORR
                 # but not returned directly by sandy_calls_errorr.
-                for mf in mf_numbers:
-                    key = f"errorr{mf}"
-                    path = errorr_dir / f"{errorr_name}{mf}"
-
-                    if key not in errorr_out and path.exists():
-                        errorr_out[key] = sandy.Errorr.from_file(path)
+                errorr_out.update(
+                    Covariance._read_existing_errorr_files(errorr_dir,
+                                                           errorr_names,
+                                                           mf_numbers,
+                                                           skip=errorr_out))
 
         else:
             # In non-database mode, cwd directly contains the ERRORR files.
             errorr_dir = self.path
 
-            for mf in mf_numbers:
-                path = errorr_dir / f"{errorr_name}{mf}"
-
-                if path.exists():
-                    errorr_out[f"errorr{mf}"] = sandy.Errorr.from_file(path)
+            errorr_out.update(
+                Covariance._read_existing_errorr_files(errorr_dir,
+                                                       errorr_names,
+                                                       mf_numbers))
 
             if not errorr_out:
                 endf6_path = errorr_dir / f"{self.zais}.endf"
@@ -267,16 +271,16 @@ class Covariance():
                 if generated:
                     errorr_out.update(generated)
 
-                for mf in mf_numbers:
-                    key = f"errorr{mf}"
-                    path = errorr_dir / f"{errorr_name}{mf}"
-
-                    if key not in errorr_out and path.exists():
-                        errorr_out[key] = sandy.Errorr.from_file(path)
+                errorr_out.update(
+                    Covariance._read_existing_errorr_files(errorr_dir,
+                                                           errorr_names,
+                                                           mf_numbers,
+                                                           skip=errorr_out))
 
         if not errorr_out:
             expected = ", ".join(
-                str(errorr_dir / f"{errorr_name}{mf}") for mf in mf_numbers)
+                str(path) for path in Covariance._expected_errorr_paths(
+                    errorr_dir, errorr_names, mf_numbers))
             raise FileNotFoundError(
                 f"No ERRORR file was found. Expected one or more of: {expected}"
             )
@@ -284,6 +288,52 @@ class Covariance():
         self.MFs2MTs = errorr_out
         self.mat = errorr_out
         self.rcov = errorr_out
+
+    @staticmethod
+    def _errorr_name_candidates(zais, zaid, temperature):
+        """
+        Return supported ERRORR filename prefixes in lookup order.
+
+        The first entry is the historical pyNDUS/NJOY-generated convention and
+        remains the default for newly generated files. The following entries
+        support temperature-free covariance databases.
+        """
+        return (
+            f"{zais}_{temperature:g}K.errorr",
+            f"{zais}.errorr",
+            f"{zaid}0.errorr",
+            f"{zaid}.errorr",
+        )
+
+    @staticmethod
+    def _expected_errorr_paths(errorr_dir, errorr_names, mf_numbers):
+        """Yield every supported ERRORR path for diagnostics."""
+        for mf in mf_numbers:
+            for errorr_name in errorr_names:
+                yield Path(errorr_dir) / f"{errorr_name}{mf}"
+
+    @staticmethod
+    def _read_existing_errorr_files(errorr_dir,
+                                    errorr_names,
+                                    mf_numbers,
+                                    skip=None):
+        """Read existing ERRORR files using all supported naming conventions."""
+        errorr_dir = Path(errorr_dir)
+        skip = {} if skip is None else skip
+        output = {}
+
+        for mf in mf_numbers:
+            key = f"errorr{mf}"
+            if key in skip:
+                continue
+
+            for errorr_name in errorr_names:
+                path = errorr_dir / f"{errorr_name}{mf}"
+                if path.exists():
+                    output[key] = sandy.Errorr.from_file(path)
+                    break
+
+        return output
 
     @property
     def temperature(self):
