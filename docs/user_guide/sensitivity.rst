@@ -137,6 +137,19 @@ correspond to addition and subtraction of their sensitivities:
    product_sensitivity = sens * other
    ratio_sensitivity = sens / other
 
+Scalar factors may also be ``uncertainties`` variables. In that case pyNDUS
+uses the nominal value to scale the sensitivity coefficients and propagates
+the uncertainty of the scalar into ``sens_rsd``. This is useful for EGPT-style
+expressions where a sensitivity profile is normalized by a Monte Carlo
+response such as ``keff``:
+
+.. code-block:: python
+
+   from uncertainties import ufloat
+
+   keff = ufloat(1.00032, 0.00012)
+   normalized = sens / keff
+
 Binary operations require compatible energy-group boundaries. Metadata on the
 response, material, ZAID and MT axes are handled according to one of three
 policies:
@@ -162,6 +175,8 @@ policies:
 The stored ``sens_rsd`` values are propagated through absolute standard
 deviations. Expressions derived from the same source retain their correlation,
 so ``sens / 2 + sens / 2`` reconstructs both the original averages and RSDs.
-Distinct source objects are treated as statistically independent.
+The same is true for repeated use of the same ``uncertainties`` variable.
+Distinct source objects and distinct uncertainty variables are treated as
+statistically independent.
 
 See :doc:`../tutorials/sensitivity_algebra` for an executable walkthrough.

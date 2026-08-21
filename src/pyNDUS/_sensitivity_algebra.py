@@ -69,34 +69,34 @@ class SensitivityAlgebraMixin:
         return self._combine_sensitivity(other, function, policy)
 
     def __add__(self, other):
-        if np.isscalar(other):
+        if self._is_scalar_factor(other):
             return NotImplemented
         return self._combine_sensitivity(other, operator.add)
 
     def __sub__(self, other):
-        if np.isscalar(other):
+        if self._is_scalar_factor(other):
             return NotImplemented
         return self._combine_sensitivity(other, operator.sub)
 
     def __mul__(self, other):
-        if np.isscalar(other):
+        if self._is_scalar_factor(other):
             return self._scale(other)
         return self._combine_sensitivity(other, operator.add)
 
     def __rmul__(self, other):
-        if np.isscalar(other):
+        if self._is_scalar_factor(other):
             return self._scale(other)
         return NotImplemented
 
     def __truediv__(self, other):
-        if np.isscalar(other):
-            if other == 0:
+        if self._is_scalar_factor(other):
+            if self._scalar_nominal_value(other) == 0:
                 raise ZeroDivisionError("Cannot divide a Sensitivity by zero.")
             return self._scale(1 / other)
         return self._combine_sensitivity(other, operator.sub)
 
     def __pow__(self, exponent):
-        if not np.isscalar(exponent):
+        if not self._is_scalar_factor(exponent):
             return NotImplemented
         return self._scale(exponent)
 
@@ -270,15 +270,45 @@ class SensitivityAlgebraMixin:
         else:
             setattr(result, name, value)
 
+    @staticmethod
+    def _is_scalar_factor(value):
+        return np.isscalar(value) or hasattr(value, "nominal_value")
+
+    @staticmethod
+    def _scalar_nominal_value(value):
+        nominal = getattr(value, "nominal_value", value)
+        return float(nominal)
+
+    @staticmethod
+    def _scalar_derivative_components(value):
+        derivatives = getattr(value, "derivatives", None)
+        if not derivatives:
+            return ()
+        components = []
+        for variable, derivative in derivatives.items():
+            std_dev = getattr(variable, "std_dev", 0.0)
+            if derivative != 0 and std_dev != 0:
+                components.append(
+                    (("scalar", variable), float(derivative) * float(std_dev))
+                )
+        return tuple(components)
+
     def _scale(self, factor):
-        if not np.isscalar(factor):
+        if not self._is_scalar_factor(factor):
             return NotImplemented
-        factor = float(factor)
-        average = np.asarray(self.sens) * factor
+        nominal_factor = self._scalar_nominal_value(factor)
+        base_average = np.asarray(self.sens)
+        average = base_average * nominal_factor
         components = {
-            source: component * factor
+            source: component * nominal_factor
             for source, component in self._uncertainty_components().items()
         }
+        for source, scalar_component in self._scalar_derivative_components(factor):
+            contribution = base_average * scalar_component
+            if source in components:
+                components[source] = components[source] + contribution
+            else:
+                components[source] = contribution
         result = self._new_result(average)
         result._algebra_uncertainty_components = components
         result._algebra_provenance_average = np.array(average, copy=True)

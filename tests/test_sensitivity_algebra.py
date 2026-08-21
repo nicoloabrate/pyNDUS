@@ -2,6 +2,7 @@ from collections import OrderedDict
 
 import numpy as np
 import pytest
+from uncertainties import ufloat
 
 from pyNDUS import Sensitivity, SensitivityAlgebraError
 
@@ -207,4 +208,54 @@ def test_in_place_data_change_starts_new_uncertainty_provenance():
     np.testing.assert_allclose(
         total.sens_rsd,
         expected_absolute_std / np.abs(total.sens),
+    )
+
+
+def test_uncertain_scalar_multiplication_propagates_factor_uncertainty():
+    original = sensitivity([2.0, -4.0], rsd=None)
+    factor = ufloat(3.0, 0.3)
+
+    scaled = original * factor
+
+    np.testing.assert_allclose(scaled.sens, original.sens * factor.nominal_value)
+    np.testing.assert_allclose(scaled.sens_rsd, 0.1)
+
+
+def test_uncertain_scalar_division_combines_sensitivity_and_factor_uncertainty():
+    original = sensitivity([2.0, -4.0], rsd=0.1)
+    keff = ufloat(2.0, 0.02)
+
+    scaled = original / keff
+
+    expected_average = original.sens / keff.nominal_value
+    sensitivity_component = (
+        np.abs(original.sens) * original.sens_rsd / keff.nominal_value
+    )
+    keff_component = (
+        original.sens * (-1 / keff.nominal_value ** 2) * keff.std_dev
+    )
+    expected_absolute_std = np.sqrt(
+        sensitivity_component ** 2 + keff_component ** 2
+    )
+
+    np.testing.assert_allclose(scaled.sens, expected_average)
+    np.testing.assert_allclose(
+        scaled.sens_rsd,
+        expected_absolute_std / np.abs(expected_average),
+    )
+
+
+def test_reused_uncertain_scalar_remains_correlated_across_terms():
+    original = sensitivity([2.0, 4.0], rsd=None)
+    factor = ufloat(2.0, 0.1)
+
+    total = original * factor + original * factor
+
+    expected_average = 2 * original.sens * factor.nominal_value
+    expected_absolute_std = 2 * original.sens * factor.std_dev
+
+    np.testing.assert_allclose(total.sens, expected_average)
+    np.testing.assert_allclose(
+        total.sens_rsd,
+        np.abs(expected_absolute_std) / np.abs(expected_average),
     )
