@@ -6,3 +6,4 @@ Sensitivity API
    :undoc-members:
    :show-inheritance:
    :exclude-members: OrderedDict, Iterable, Path
+   :no-index:
