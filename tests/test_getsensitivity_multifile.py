@@ -8,6 +8,7 @@ import numpy.testing as npt
 import pytest
 
 from pyNDUS.sensitivity import Sensitivity, SensitivityError
+from pyNDUS.channels import SensitivityChannel
 
 # Import del modulo, necessario per monkeypatchare st.read
 getsensitivity_module = importlib.import_module("pyNDUS.sensitivity")
@@ -111,7 +112,10 @@ def test_multifile_merge_disjoint_profiles(tmp_path, monkeypatch, energy_grid, )
     assert set(merged.responses) == {"keff", "beff"}
     assert set(merged.materials) == {"total"}
     assert set(merged.zaid) == {922350, 942390}
-    assert set(merged.MTs) == {18, 102}
+    assert set(merged.channels) == {
+        SensitivityChannel.from_endf(average_MF=3, average_MT=18, name="xs 18"),
+        SensitivityChannel.from_endf(average_MF=3, average_MT=102, name="xs 102"),
+    }
 
     avg_1, rsd_1 = _extract_profile(merged, "keff", "total", 922350, 18, )
     avg_2, rsd_2 = _extract_profile(merged, "beff", "total", 942390, 102, )

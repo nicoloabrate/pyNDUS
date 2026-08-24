@@ -7,6 +7,7 @@ import numpy.testing as npt
 import pyNDUS.sandwich as sandwich_module
 from pyNDUS.sandwich import Sandwich
 from pyNDUS.sensitivity import Sensitivity
+from pyNDUS.channels import SensitivityChannel
 
 
 class FakeSensitivity:
@@ -112,7 +113,15 @@ def _real_serpent_sensitivity(perturbations,
 
     data = np.zeros((1, 1, 1, len(sens.MTs), sens.n_groups))
     for key, profile in profiles.items():
-        data[0, 0, 0, sens.MTs[key], :] = profile
+        if isinstance(key, int):
+            channel = SensitivityChannel.from_endf(
+                average_MF=3,
+                average_MT=key,
+                name=f"xs {key}",
+            )
+        else:
+            channel = SensitivityChannel.from_alias(key)
+        data[0, 0, 0, sens.channels[channel], :] = profile
     sens._sens = data
     sens._sens_rsd = None
     return sens
@@ -295,21 +304,223 @@ def test_mf34_mt251_uses_elastic_legendre_moment_1(monkeypatch):
     npt.assert_allclose(got, expected, rtol=1e-14, atol=0.0)
 
 
+def test_mf34_mt2_covariance_uses_legendre_p1_when_requested_as_mt251(
+        monkeypatch):
+    """Resolve stored MF34/MT2 covariance to the supported L=1 channel."""
+    monkeypatch.setattr(sandwich_module, "Covariance", FakeCovZAForInit)
+
+    za = 922350
+    xs = np.array([100.0, 100.0])
+    leg1 = np.array([0.3, 0.4])
+    leg2 = np.array([10.0, 20.0])
+    C = np.diag([0.5, 0.25])
+
+    sens = _real_serpent_sensitivity(
+        ["xs 2", "ela leg mom 1", "ela leg mom 2"],
+        {
+            2: xs,
+            "ela leg mom 1": leg1,
+            "ela leg mom 2": leg2,
+        },
+        za=za,
+    )
+    covmat = {za: FakeCovZAForInit({"errorr34": {(2, 2): C}})}
+
+    sand = Sandwich(
+        sens=sens,
+        covmat=covmat,
+        list_resp=["keff"],
+        list_mat=["fuel"],
+        list_za=[za],
+        list_MTs=[251],
+        list_MFs=[34],
+        include_MF=True,
+    )
+
+    expected = float(leg1.T @ C @ leg1)
+    got = sand.uncertainty.loc[("keff", "fuel", "U-235", 34, 2), 2]
+
+    assert sand.MFs2MTs == {za: {"errorr34": [2]}}
+    npt.assert_allclose(got, expected, rtol=1e-14, atol=0.0)
+
+
+def test_invalid_covariance_mt_reports_parsing_problem(monkeypatch):
+    """Reject ZAID-like values before they become fake sensitivity channels."""
+    monkeypatch.setattr(sandwich_module, "Covariance", FakeCovZAForInit)
+
+    za = 922350
+    sens = _real_serpent_sensitivity(
+        ["xs 18"],
+        {18: np.array([1.0, 2.0])},
+        za=za,
+    )
+    covmat = {
+        za: FakeCovZAForInit({"errorr33": {
+            (942390, 942390): np.eye(2)
+        }})
+    }
+
+    with pytest.raises(sandwich_module.SandwichError, match="MAT/ZAID"):
+        Sandwich(
+            sens=sens,
+            covmat=covmat,
+            list_resp=["keff"],
+            list_mat=["fuel"],
+            list_za=[za],
+            list_MTs=None,
+            list_MFs=[33],
+        )
+
+
+def test_uncertainty_mc_offdiagonal_passes_za_as_keyword(monkeypatch):
+    """Use keyword arguments when reading off-diagonal MC sensitivities."""
+    monkeypatch.setattr(sandwich_module, "Covariance", FakeCovZAForInit)
+
+    za = 922350
+    s18 = np.array([1.0, 2.0])
+    s102 = np.array([0.5, -0.25])
+    cov18 = np.diag([0.1, 0.2])
+    cov102 = np.diag([0.3, 0.4])
+    cov_cross = np.diag([0.01, -0.02])
+
+    sens = _real_serpent_sensitivity(
+        ["xs 18", "xs 102"],
+        {
+            18: s18,
+            102: s102,
+        },
+        za=za,
+    )
+    sens._sens_rsd = np.zeros_like(sens.sens)
+    covmat = {
+        za:
+        FakeCovZAForInit({
+            "errorr33": {
+                (18, 18): cov18,
+                (102, 102): cov102,
+                (18, 102): cov_cross,
+                (102, 18): cov_cross,
+            }
+        })
+    }
+
+    sand = Sandwich(
+        sens=sens,
+        covmat=covmat,
+        list_resp=["keff"],
+        list_mat=["fuel"],
+        list_za=[za],
+        list_MTs=[18, 102],
+        list_MFs=[33],
+        include_MF=True,
+    )
+
+    expected = float(s18.T @ cov_cross @ s102)
+    got = sand.uncertainty.loc[("keff", "fuel", "U-235", 33, 18), 102]
+
+    npt.assert_allclose(got.nominal_value, expected, rtol=1e-14, atol=0.0)
+
+
 def test_numeric_serpent_nubar_channels_are_mf1_not_mf3():
     """Keep numeric Serpent nubar perturbations mapped to MF1/MF31."""
     sens = object.__new__(Sensitivity)
     sens.reader = "serpent"
     sens.MTs = [452, 455, 456]
 
-    assert sens.endf_channels[452]["MF"] == 1
-    assert sens.endf_channels[455]["MF"] == 1
-    assert sens.endf_channels[456]["MF"] == 1
-    assert sens.get_covariance_sensitivity_keys(31, 452) == [452]
-    assert sens.get_covariance_sensitivity_keys(31, 455) == [455]
-    assert sens.get_covariance_sensitivity_keys(31, 456) == [456]
+    total = SensitivityChannel.from_alias("nubar total")
+    delayed = SensitivityChannel.from_alias("nubar delayed")
+    prompt = SensitivityChannel.from_alias("nubar prompt")
+
+    assert sens.endf_channels[total]["MF"] == 1
+    assert sens.endf_channels[delayed]["MF"] == 1
+    assert sens.endf_channels[prompt]["MF"] == 1
+    assert sens.get_covariance_sensitivity_keys(31, 452) == [total]
+    assert sens.get_covariance_sensitivity_keys(31, 455) == [delayed]
+    assert sens.get_covariance_sensitivity_keys(31, 456) == [prompt]
     assert sens.get_covariance_sensitivity_keys(33, 452) == []
     assert sens.get_covariance_sensitivity_keys(33, 455) == []
     assert sens.get_covariance_sensitivity_keys(33, 456) == []
+
+
+def test_similarity_without_covmat_uses_channels_not_mf_mt_cartesian_product():
+    """Build MF/MT pairs from sensitivity channels, not from flat MT lists."""
+    za = 922350
+    sens = _real_serpent_sensitivity(
+        ["xs 18", "chi prompt"],
+        {
+            18: np.array([1.0, 2.0]),
+            "chi prompt": np.array([0.5, -0.2]),
+        },
+        za=za,
+    )
+
+    sand = Sandwich(
+        sens=sens,
+        sens2=sens,
+        similarity=True,
+        list_resp=["keff"],
+        list_za=[za],
+        list_MTs=[18],
+        list_MFs=[31, 33, 35],
+        include_MF=True,
+    )
+
+    assert sand.MFs2MTs == {
+        za: {
+            "errorr33": [18],
+            "errorr35": [18],
+        }
+    }
+
+
+def test_sensitivity_get_accepts_channels_and_rejects_ambiguous_mt():
+    """MT-only selection is rejected when multiple channels share that MT."""
+    za = 922350
+    xs = np.array([1.0, 2.0])
+    chi_prompt = np.array([0.5, -0.2])
+    sens = _real_serpent_sensitivity(
+        ["xs 18", "chi prompt"],
+        {
+            18: xs,
+            "chi prompt": chi_prompt,
+        },
+        za=za,
+    )
+
+    chi_channel = SensitivityChannel.from_alias("chi prompt")
+    avg = sens.get(resp=["keff"], mat=["fuel"], za=[za], channel=[chi_channel])
+
+    npt.assert_allclose(avg.reshape(-1), chi_prompt)
+    with pytest.raises(ValueError, match="ambiguous"):
+        sens.get(resp=["keff"], mat=["fuel"], za=[za], MT=18)
+
+
+def test_elastic_legendre_p1_accepts_mf34_mt251_and_mf34_mt2_with_l():
+    """P1 can be represented by reduced MT251 or by complete MF34/MT2/L=1."""
+    p1 = SensitivityChannel.from_alias("ela leg mom 1")
+
+    assert p1 == SensitivityChannel.from_endf(covariance_MF=34,
+                                              covariance_MT=251)
+    assert p1 == SensitivityChannel.from_endf(covariance_MF=34,
+                                              covariance_MT=2,
+                                              L=1)
+    assert p1.matches_covariance(34, 251)
+    assert p1.matches_covariance(34, 2)
+
+    with pytest.raises(ValueError, match="multiple sensitivity channels"):
+        SensitivityChannel.from_endf(covariance_MF=34, covariance_MT=2)
+
+
+def test_from_endf_requires_mf_mt_pair_to_resolve_registered_channel():
+    """An MT number alone is not enough to infer a registered channel."""
+    mt_only = SensitivityChannel.from_endf(average_MT=18)
+    chi_prompt = SensitivityChannel.from_alias("chi prompt")
+
+    assert mt_only != chi_prompt
+    assert mt_only.average_MF is None
+    assert mt_only.average_MT == 18
+    assert SensitivityChannel.from_endf(covariance_MF=35,
+                                        covariance_MT=18) == chi_prompt
 
 
 def test_uncertainty_signed_sqrt_and_total_standard_deviation(monkeypatch):
