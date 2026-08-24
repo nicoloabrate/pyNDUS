@@ -392,8 +392,11 @@ class Sandwich:
         Covariance objects keyed by ZAID. Required for uncertainty and
         representativity calculations.
     sigma : int or float, optional
-        Multiplier applied to Monte Carlo sensitivity relative standard
-        deviations. Ignored when sensitivities do not include RSDs.
+        Width of the Monte Carlo error bar assumed for sensitivity coefficients
+        with relative standard deviations. The default is ``sigma=2``. When
+        ``sens_rsd`` is available, coefficients are converted to
+        ``uncertainties`` variables and propagated through the calculation.
+        Ignored when sensitivities do not include RSDs.
     verbosity : bool, optional
         Retained for API compatibility.
     list_resp : str or list[str], optional

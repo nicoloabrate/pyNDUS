@@ -104,5 +104,11 @@ Run a sandwich calculation
 
 The default Sandwich ``calculation_type`` is ``uncertainty`` but also ``representativity`` and ``similariy`` are available.
 The covariance dictionary must contain compatible ``Covariance`` objects.
+
+.. note::
+   When Monte Carlo sensitivity RSDs are available, pyNDUS propagates them with
+   ``uncertainties``; by default ``sigma=2`` sets a two-sigma MC error bar on the
+   sensitivity coefficients.
+
 See :doc:`user_guide/sandwich` for the calculation modes and missing-covariance
 policies.

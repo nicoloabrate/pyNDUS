@@ -14,6 +14,15 @@ An uncertainty calculation combines sensitivity vectors with compatible
 covariance blocks. Diagonal reaction terms and off-diagonal cross-reaction
 terms are retained in the result structure.
 
+If the sensitivity reader provides Monte Carlo relative standard deviations
+(``sens_rsd``), the sensitivity coefficients are treated as uncertain
+quantities. pyNDUS converts them to ``uncertainties`` variables and propagates
+that extra Monte Carlo component through the sandwich algebra. The ``sigma``
+argument controls the assumed width of the MC error bar: the default is
+``sigma=2``, i.e. two times the reported MC relative standard deviation. Use
+``sigma=1`` for a one-sigma propagation. When no ``sens_rsd`` array is present,
+``sigma`` is ignored.
+
 By default, ``uncertainty`` contains variance contributions
 
 .. math::
