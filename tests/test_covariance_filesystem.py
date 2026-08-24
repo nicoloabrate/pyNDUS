@@ -12,8 +12,9 @@ import pytest
 class DummyErrorr:
     """Minimal ERRORR object exposing covariance metadata."""
 
-    def __init__(self):
+    def __init__(self, path=None):
         """Populate MT and MAT metadata for one covariance section."""
+        self.read_path = path
         self.mt = [451, 18]
         self.mat = [1234]
 
@@ -69,11 +70,18 @@ class DummyEndf6Processor:
 
 def _load_covariance_module(monkeypatch):
     """Import pyNDUS.covariance with a fake sandy module."""
+    loaded_paths = []
+
+    def errorr_from_file(path):
+        loaded_paths.append(path)
+        return DummyErrorr(path)
+
     fake_sandy = SimpleNamespace(
         __version__="test",
         Endf6=DummyEndf6,
-        Errorr=SimpleNamespace(from_file=lambda path: DummyErrorr()),
+        Errorr=SimpleNamespace(from_file=errorr_from_file),
         get_endf6_file=lambda lib, kind, zaid: DummyEndf6(),
+        loaded_paths=loaded_paths,
     )
     monkeypatch.setitem(sys.modules, "sandy", fake_sandy)
     sys.modules.pop("pyNDUS.covariance", None)
@@ -96,6 +104,86 @@ def test_non_database_mode_reads_errorr_files_from_cwd(monkeypatch, tmp_path):
 
     assert cov.path == tmp_path
     assert set(cov.rcov) == {"errorr33"}
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "U-235_300K.errorr33",
+        "U-235.errorr33",
+        "9223500.errorr33",
+        "922350.errorr33",
+    ],
+)
+def test_database_mode_reads_supported_errorr_file_names(
+        monkeypatch, tmp_path, filename):
+    """Read legacy and temperature-free ERRORR names from database trees."""
+    module = _load_covariance_module(monkeypatch)
+    errorr_dir = tmp_path / "endfb_80" / "ECCO-33" / "errorr"
+    errorr_dir.mkdir(parents=True)
+    (errorr_dir / filename).write_text("errorr")
+
+    def fail_sandy_calls_errorr(**kwargs):
+        raise AssertionError("existing ERRORR files should not be regenerated")
+
+    monkeypatch.setattr(
+        module.Covariance,
+        "sandy_calls_errorr",
+        staticmethod(fail_sandy_calls_errorr),
+    )
+
+    cov = module.Covariance(
+        922350,
+        temperature=300,
+        group_structure=[1.0, 2.0],
+        egridname="ECCO-33",
+        lib="endfb_80",
+        cwd=tmp_path,
+        database=True,
+    )
+
+    assert set(cov.rcov) == {"errorr33"}
+    assert module.sandy.loaded_paths == [errorr_dir / filename]
+
+
+def test_non_database_mode_reads_zaid0_errorr_name(monkeypatch, tmp_path):
+    """Read Serpent-style ZAID0 ERRORR names directly from cwd."""
+    module = _load_covariance_module(monkeypatch)
+    path = tmp_path / "9223500.errorr35"
+    path.write_text("errorr")
+
+    cov = module.Covariance(
+        922350,
+        temperature=900,
+        group_structure=[1.0, 2.0],
+        egridname="custom",
+        cwd=tmp_path,
+        database=False,
+    )
+
+    assert set(cov.rcov) == {"errorr35"}
+    assert module.sandy.loaded_paths == [path]
+
+
+def test_legacy_temperature_errorr_name_has_lookup_priority(
+        monkeypatch, tmp_path):
+    """Prefer the historical pyNDUS filename when several names coexist."""
+    module = _load_covariance_module(monkeypatch)
+    legacy = tmp_path / "U-235_300K.errorr33"
+    zaid = tmp_path / "922350.errorr33"
+    legacy.write_text("legacy")
+    zaid.write_text("zaid")
+
+    cov = module.Covariance(
+        922350,
+        temperature=300,
+        group_structure=[1.0, 2.0],
+        egridname="custom",
+        cwd=tmp_path,
+        database=False,
+    )
+
+    assert module.sandy.loaded_paths == [legacy]
 
 
 def test_non_database_mode_stores_mf35_covariance(monkeypatch, tmp_path):
@@ -135,6 +223,70 @@ def test_get_returns_explicit_mf35_covariance(monkeypatch):
     out = cov.get((18, 18), MF=35, to_numpy=True)
 
     np.testing.assert_allclose(out, np.diag([0.1, 0.2]))
+
+
+def test_mfs2mts_uses_covariance_dataframe_mts_before_metadata(monkeypatch):
+    """Use stored matrix MTs instead of ERRORR metadata keys such as ZAIDs."""
+    module = _load_covariance_module(monkeypatch)
+    energy = pd.IntervalIndex.from_breaks([1.0, 2.0, 3.0])
+    index = pd.MultiIndex.from_tuples([(2, 942390, e) for e in energy])
+
+    class ErrorrWithFrame:
+        """ERRORR object whose metadata would be misleading if iterated."""
+
+        mt = {942390: [451, 251]}
+
+        def get_cov(self):
+            """Return covariance data stored as MF34/MT2."""
+            return SimpleNamespace(data=pd.DataFrame(
+                np.diag([0.1, 0.2]), index=index, columns=index))
+
+    cov = object.__new__(module.Covariance)
+    cov.MFs2MTs = {"errorr34": ErrorrWithFrame()}
+
+    assert cov.MFs2MTs == {"errorr34": [2]}
+
+
+def test_mfs2mts_drops_declared_mts_when_matrix_is_empty(monkeypatch):
+    """Do not advertise declared MTs that have no covariance rows/columns."""
+    module = _load_covariance_module(monkeypatch)
+    empty_index = pd.MultiIndex.from_tuples([], names=["MAT", "MT", "E"])
+
+    class EmptyErrorr:
+        """ERRORR object with declared MTs but no extracted matrix data."""
+
+        mt = [451, 251]
+
+        def get_cov(self):
+            """Return an empty covariance DataFrame."""
+            return SimpleNamespace(
+                data=pd.DataFrame(index=empty_index, columns=empty_index))
+
+    cov = object.__new__(module.Covariance)
+    cov.MFs2MTs = {"errorr34": EmptyErrorr()}
+
+    assert cov.MFs2MTs == {"errorr34": []}
+
+
+def test_get_accepts_mf34_mt251_alias_for_stored_mt2(monkeypatch):
+    """Read MF34/MT2 covariance when the caller requests reduced MT251."""
+    module = _load_covariance_module(monkeypatch)
+    cov = object.__new__(module.Covariance)
+    cov._mat = 1234
+    cov._MFs2MTs = {"errorr34": [2]}
+
+    energy = pd.IntervalIndex.from_breaks([1.0, 2.0, 3.0])
+    index = pd.MultiIndex.from_tuples([(1234, 2, e) for e in energy],
+                                      names=["MAT", "MT", "E"])
+    cov._rcov = {
+        "errorr34": pd.DataFrame(np.diag([0.3, 0.4]),
+                                 index=index,
+                                 columns=index),
+    }
+
+    out = cov.get((251, 251), MF=34, to_numpy=True)
+
+    np.testing.assert_allclose(out, np.diag([0.3, 0.4]))
 
 
 def test_get_requires_explicit_mf(monkeypatch):
