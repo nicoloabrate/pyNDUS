@@ -69,24 +69,25 @@ different ENDF files. For example:
 * MF=35, MT=18 is matched to ``chi prompt``.
 * MF=31, MT=452/455/456 is matched to the corresponding nubar sensitivity.
 * MF=34, MT=251 is matched to ``ela leg mom 1``.
+* MF=34, MT=2 is treated as the currently supported ``L=1`` angular block.
 
 The MF34 angular-distribution treatment is deliberately limited. pyNDUS
-currently supports only the reduced MF34/MT251 representation, which
-corresponds to the first elastic Legendre moment
-:math:`L=1` (:math:`\bar{\mu}=a_1`). This is equivalent to using the
-``ela leg mom 1`` Serpent sensitivity.
+currently propagates only the first elastic Legendre moment
+:math:`L=1` (:math:`\bar{\mu}=a_1`). This may come from the reduced
+MF34/MT251 representation or from an MF34/MT2 covariance. In both cases the
+matched sensitivity is ``ela leg mom 1``.
 
-Higher Legendre moments are not propagated at present. If an MF34 covariance
-requires resolving MF34/MT2 into multiple Legendre orders, pyNDUS raises an
-explicit error instead of silently pairing the covariance with the wrong
-Serpent sensitivity. In practice, many ERRORR-processed covariance sets expose
-only MT251 for this reduced angular term, but analyses that require
-``ela leg mom 2`` or higher need an L-resolved covariance representation.
+Higher Legendre moments are not propagated at present. If only
+``ela leg mom 2`` or higher can be resolved for an MF34 covariance, pyNDUS
+raises an explicit error instead of silently pairing the covariance with the
+wrong sensitivity. Analyses that require ``ela leg mom 2`` or higher need an
+L-resolved covariance representation.
 
 Selections are interpreted against both the physical quantity and the stored
 covariance MT. Therefore ``list_MTs=[2]`` can select an available
-MF34/MT251 block for ``ela leg mom 1``; ``list_MTs=[251]`` selects the same
-reduced covariance block directly. Use ``list_MFs=[34]`` or
+MF34/MT251 block for ``ela leg mom 1``; ``list_MTs=[251]`` can select a stored
+MF34/MT2 block for the same first Legendre moment. Result tables keep the MT
+actually read from the covariance matrix. Use ``list_MFs=[34]`` or
 ``list_MFs=[35]`` when these non-default covariance files should be included.
 
 Similarity calculations

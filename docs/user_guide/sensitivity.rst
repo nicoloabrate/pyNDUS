@@ -13,7 +13,7 @@ files using the supported ``.eranos33`` or ``.eranos1968`` suffixes.
 
    sens = Sensitivity("model_sens0.m")
 
-The object stores responses, materials, nuclides, MT identifiers, group
+The object stores responses, materials, nuclides, sensitivity channels, group
 boundaries, mean sensitivity profiles, and—when available—the relative standard
 deviations reported by the source calculation.
 
@@ -25,18 +25,45 @@ ENDF MT numbers. For example, ``chi prompt`` and ``ela leg mom 1`` are not
 cross-section perturbations even though they are related to reactions that also
 use familiar MT numbers.
 
-For this reason, ``Sensitivity.MTs`` should be read as the set of sensitivity
-profile keys, not as a complete ENDF covariance identifier. Serpent
-sensitivities also expose ``endf_channels``, which records the ENDF quantity
-and the covariance channel used by ``Sandwich``:
+For this reason, ``Sensitivity.channels`` is the canonical description of the
+sensitivity-profile axis. Each key is a ``SensitivityChannel`` carrying the
+average-side ENDF identifiers, the covariance-side ENDF identifiers, and
+optionally the Legendre order ``L``. ``Sensitivity.MTs`` is retained only as a
+compatibility alias for the same channel mapping.
 
 .. code-block:: python
 
    sens = Sensitivity("case_sens0.m")
 
-   print(sens.MTs)
-   print(sens.endf_channels["chi prompt"])
+   print(sens.channels)
    print(sens.get_covariance_sensitivity_keys(35, 18))
+
+Profiles can be selected directly by channel. The older ``MT=`` shortcut is
+still accepted when it identifies exactly one channel; if the same MT appears
+in more than one MF, pyNDUS raises an explicit ambiguity error.
+
+.. code-block:: python
+
+   from pyNDUS import SensitivityChannel
+
+   chi_prompt = SensitivityChannel.from_alias("chi prompt")
+   avg, rsd = sens.get(channel=chi_prompt)
+
+   fission_xs = SensitivityChannel.from_endf(average_MF=3, average_MT=18)
+   avg, rsd = sens.get(channel=fission_xs)
+
+``SensitivityChannel.from_alias("chi prompt")`` is intended for reader labels
+such as Serpent perturbation names, MCNP labels, or DRAGON labels. Known aliases
+are normalized to their ENDF-aware channel, so ``"scattering law"`` (MCNP) and
+``"ela leg mom 1"`` (Serpent) both identify the first elastic Legendre moment.
+
+``SensitivityChannel.from_endf(...)`` is intended for code that already knows
+the ENDF identifiers. It accepts either average-side identifiers, such as
+``average_MF=3, average_MT=18``, or covariance-side identifiers, such as
+``covariance_MF=35, covariance_MT=18``. The latter returns ``chi prompt``.
+For covariance channels that are not unique, pyNDUS asks for the missing
+specifier instead of guessing; for example MF34/MT2 requires ``L=1`` or
+``L=2``.
 
 The main Serpent mappings are:
 
@@ -89,7 +116,7 @@ same energy-group structure. The resulting object retains the same internal
 array organization and public ``get`` interface as a single-file object.
 
 Duplicate profiles are identified by the tuple
-``(response, material, ZA, MT)``. Available policies are:
+``(response, material, ZA, channel)``. Available policies are:
 
 ``raise``
    Stop and report the duplicate profile.
@@ -111,11 +138,13 @@ view is useful.
 
 .. code-block:: python
 
+   fission_xs = SensitivityChannel.from_endf(average_MF=3, average_MT=18)
+
    avg, rsd = sens.get(
        resp=["keff"],
        mat=["total"],
        za=["U-235"],
-       MT=[18],
+       channel=fission_xs,
        group_order="ascending",
    )
 
