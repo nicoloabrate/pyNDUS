@@ -8,6 +8,20 @@ With ``database=True``, ``cwd`` is treated as the root of a structured
 library/grid tree. With ``database=False``, covariance and ENDF files are read
 or generated directly in ``cwd``.
 
+Existing ERRORR files are looked up using several filename conventions. The
+historical pyNDUS/NJOY-generated name
+``<ZAIS>_<temperature>K.errorr<MF>`` is still preferred, for example
+``U-235_300K.errorr33``. If it is not present, pyNDUS also accepts
+temperature-free names:
+
+* ``<ZAIS>.errorr<MF>``, for example ``U-235.errorr33``;
+* ``<ZAID>0.errorr<MF>``, for example ``9223500.errorr33``;
+* ``<ZAID>.errorr<MF>``, for example ``922350.errorr33``.
+
+This applies both to structured databases and to flat ``cwd`` directories.
+When pyNDUS has to generate new ERRORR files, it still writes the historical
+``<ZAIS>_<temperature>K.errorr<MF>`` name.
+
 Core inputs include:
 
 * ZAID;

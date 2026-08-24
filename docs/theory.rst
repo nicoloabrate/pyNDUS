@@ -156,8 +156,9 @@ moment only. pyNDUS maps this block to the Serpent perturbation
 The current implementation does not propagate Legendre moments beyond
 :math:`L=1`. Full MF34/MT2 covariance data can in principle contain several
 Legendre orders, but pyNDUS covariance matrices are currently indexed by MF
-and MT only, not by :math:`L`. If such a covariance channel is requested and
-would require choosing between multiple Legendre sensitivities, pyNDUS raises
-an explicit error rather than assuming the wrong moment. Support for
-``ela leg mom 2`` and higher requires an L-resolved MF34 covariance
-representation.
+and MT only, not by :math:`L`. For now pyNDUS treats MF34/MT2 and MF34/MT251
+as usable representations of the first elastic Legendre moment and matches
+them to ``ela leg mom 1``. If only ``ela leg mom 2`` or higher can be resolved
+for an MF34 covariance, pyNDUS raises an explicit error rather than assuming
+the wrong moment. Support for higher Legendre moments requires an L-resolved
+MF34 covariance representation.

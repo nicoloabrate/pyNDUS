@@ -10,11 +10,11 @@ Read a sensitivity file
 
 .. code-block:: python
 
-   from pyNDUS import Sensitivity
+   from pyNDUS import Sensitivity, SensitivityChannel
 
    sens = Sensitivity("case_sens0.m")
    print(sens.responses)
-   print(sens.MTs)
+   print(sens.channels)
 
 Multiple Serpent sensitivity files can be merged into a single object when
 their energy-group structures are consistent:
@@ -34,16 +34,21 @@ Extract a sensitivity profile
 
 .. code-block:: python
 
+   fission_xs = SensitivityChannel.from_endf(average_MF=3, average_MT=18)
+
    profile = sens.get(
        resp=["keff"],
        mat=["total"],
        za=[922350],
-       MT=[18],
+       channel=fission_xs,
        group_order="ascending",
    )
 
 When relative standard deviations are available, ``get`` returns both the
-mean sensitivity profile and its relative standard deviation.
+mean sensitivity profile and its relative standard deviation. ``MT=`` is a
+convenience shortcut only when the requested MT identifies one available
+channel. Use ``channel=`` or MF-aware filters when MF/MT alone would be
+ambiguous.
 
 Read a covariance matrix
 ------------------------
@@ -62,6 +67,10 @@ Read a covariance matrix
                             3.67879e+00, 6.06531e+00, 1.00000e+01, 1.96403e+01,]
    cov_Pu239 = Covariance("Pu-239", T, energy_grid_sens, database=True,
                      egridname="ECCO-33", lib="endfb_80", cwd=covar_path,)
+
+When reading existing ERRORR files, pyNDUS accepts both the historical
+``U-235_300K.errorr33`` style and temperature-free names such as
+``9223500.errorr33``, ``922350.errorr33``, or ``U-235.errorr33``.
 
 
 Extract a covariance sub-matrix
