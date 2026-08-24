@@ -13,8 +13,10 @@ from collections import OrderedDict
 from collections.abc import Iterable
 try:
     from ._sensitivity_algebra import SensitivityAlgebraMixin
+    from .channels import SensitivityChannel
 except ImportError:  # when run as a script
     from _sensitivity_algebra import SensitivityAlgebraMixin
+    from channels import SensitivityChannel
 try:
     import pyNDUS.utils as utils
 except ModuleNotFoundError:  # when run as a script
@@ -23,82 +25,10 @@ except ModuleNotFoundError:  # when run as a script
     except ImportError:
         import utils
 
-SERPENT_NUMERIC_ENDF_CHANNELS = {
-    452: {
-        "label": "nubar total",
-        "MF": 1,
-        "MT": 452,
-        "covariance_MF": 31,
-        "covariance_MTs": (452, ),
-    },
-    455: {
-        "label": "nubar delayed",
-        "MF": 1,
-        "MT": 455,
-        "covariance_MF": 31,
-        "covariance_MTs": (455, ),
-    },
-    456: {
-        "label": "nubar prompt",
-        "MF": 1,
-        "MT": 456,
-        "covariance_MF": 31,
-        "covariance_MTs": (456, ),
-    },
-}
-
-SERPENT_ENDF_CHANNELS = {
-    "nubar total": {
-        "MF": 1,
-        "MT": 452,
-        "covariance_MF": 31,
-        "covariance_MTs": (452, ),
-    },
-    "nubar prompt": {
-        "MF": 1,
-        "MT": 456,
-        "covariance_MF": 31,
-        "covariance_MTs": (456, ),
-    },
-    "nubar delayed": {
-        "MF": 1,
-        "MT": 455,
-        "covariance_MF": 31,
-        "covariance_MTs": (455, ),
-    },
-    "chi total": {
-        "MF": None,
-        "MT": None,
-        "covariance_MF": None,
-        "covariance_MTs": (),
-        "derived": True,
-    },
-    "chi prompt": {
-        "MF": 5,
-        "MT": 18,
-        "covariance_MF": 35,
-        "covariance_MTs": (18, ),
-    },
-    "chi delayed": {
-        "MF": 5,
-        "MT": 455,
-        "covariance_MF": 35,
-        "covariance_MTs": (455, ),
-    },
-    "ela leg mom 1": {
-        "MF": 4,
-        "MT": 2,
-        "L": 1,
-        "covariance_MF": 34,
-        "covariance_MTs": (2, 251),
-    },
-    "ela leg mom 2": {
-        "MF": 4,
-        "MT": 2,
-        "L": 2,
-        "covariance_MF": 34,
-        "covariance_MTs": (2, ),
-    },
+SERPENT_NUMERIC_ALIASES = {
+    452: "nubar total",
+    455: "nubar delayed",
+    456: "nubar prompt",
 }
 
 
@@ -127,19 +57,22 @@ class Sensitivity(SensitivityAlgebraMixin):
         Mapping of ZAID numbers (e.g., 942390) to their indices.
     zais : OrderedDict
         Mapping of ZA strings (e.g., 'Pu-239') to their indices.
+    channels : OrderedDict
+        Mapping of :class:`SensitivityChannel` objects to their axis indices.
     MTs : OrderedDict
-        Mapping of MT numbers (see ENDF-6 format for the numbers) to their indices.
+        Compatibility alias for ``channels``.
     group_structure : iterable
         Energy group structure, stored in ascending order.
     n_groups : int
         Number of energy groups. Sensitivity arrays are stored in ascending
         energy order, consistently with ``group_structure``.
     sens : np.ndarray
-        Sensitivity profiles whose shape is (nResp, nMat, nZaid, nMTs, nE).
+        Sensitivity profiles whose shape is
+        (nResp, nMat, nZaid, nChannels, nE).
     sens_rsd : np.ndarray
         Relative standard deviations of the sensivity profile. When not available
         (e.g., for deterministic calculations), it is None.
-        The shape is (nResp, nMat, nZaid, nMTs, nE).
+        The shape is (nResp, nMat, nZaid, nChannels, nE).
 
     Methods
     -------
@@ -151,11 +84,12 @@ class Sensitivity(SensitivityAlgebraMixin):
         group structure).
     NormalizeSensProfile(sens_profile, energy_vector)
         Normalize a sensitivity profile in lethargy.
-    get(resp=None, mat=None, MT=None, za=None, g=None)
+    get(resp=None, mat=None, MT=None, channel=None, za=None, g=None)
         Extract sensitivity profiles and uncertainties for specified parameters.
         -'resp': response(s) to extract (e.g., 'keff', 'beff').
         -'mat': material(s) to extract (e.g., 'total', 'm1').
-        -'MT': MT number(s) to extract (e.g., 2, 4, 18).
+        -'MT': MT number(s) to extract when unambiguous.
+        -'channel': SensitivityChannel object(s) to extract.
         -'za': ZA string(s) or number(s) to extract (e.g., 'Pu-239', 942390).
         -'g': energy group(s) to extract (e.g., 1, 2, ..., n_groups).
 
@@ -763,21 +697,48 @@ class Sensitivity(SensitivityAlgebraMixin):
         self._zais = out
 
     @property
-    def MTs(self):
+    def channels(self):
         """
-        Mapping of MT numbers to their indices.
+        Mapping of sensitivity channels to their axis indices.
 
         Returns
         -------
         OrderedDict
-            MT numbers and indices.
+            :class:`SensitivityChannel` objects and indices.
         """
-        return self._MTs
+        if hasattr(self, "_channels"):
+            return self._channels
+        if hasattr(self, "_MTs"):
+            return self._MTs
+        raise ValueError("'channels' attribute is not defined.")
+
+    @channels.setter
+    def channels(self, value):
+        if not isinstance(value, Iterable):
+            raise ValueError(
+                f"Expected an Iterable instead of type {type(value)} "
+                "for 'Sensitivity.channels'")
+        channels = OrderedDict()
+        for i, channel in enumerate(value):
+            channels[self._coerce_channel(channel)] = i
+        self._channels = channels
+
+    @property
+    def MTs(self):
+        """
+        Compatibility alias for :attr:`channels`.
+
+        Returns
+        -------
+        OrderedDict
+            Sensitivity channels and indices.
+        """
+        return self.channels
 
     @MTs.setter
     def MTs(self, value):
         """
-        Set the mapping of MT numbers to their indices.
+        Set the channel mapping from reader MT numbers or descriptors.
 
         Parameters
         ----------
@@ -796,9 +757,46 @@ class Sensitivity(SensitivityAlgebraMixin):
         else:
             raise ValueError(f"Unknown reader {self.reader}")
 
+    @staticmethod
+    def _channel_to_endf_dict(channel):
+        return {
+            "label": channel.name,
+            "MF": channel.average_MF,
+            "MT": channel.average_MT,
+            "L": channel.L,
+            "covariance_MF": channel.covariance_MF,
+            "covariance_MTs": channel.covariance_MTs,
+        }
+
+    @staticmethod
+    def _coerce_channel(value):
+        if isinstance(value, SensitivityChannel):
+            return value
+        if isinstance(value, (int, np.integer)):
+            mt = int(value)
+            if mt in SERPENT_NUMERIC_ALIASES:
+                return SensitivityChannel.from_alias(SERPENT_NUMERIC_ALIASES[mt])
+            return SensitivityChannel.from_endf(
+                average_MF=3, average_MT=mt, name=f"xs {mt}")
+        if isinstance(value, str):
+            label = " ".join(value.split()).lower()
+            if "xs" in label:
+                mt = 1 if "total" in label else int(label.split()[1])
+                return SensitivityChannel.from_endf(
+                    average_MF=3, average_MT=mt, name=label)
+            try:
+                return SensitivityChannel.from_alias(label)
+            except ValueError:
+                return SensitivityChannel(
+                    average_MF=None, average_MT=None, covariance_MF=None,
+                    covariance_MT=None, name=label)
+        raise ValueError(
+            "Sensitivity channels must be SensitivityChannel, int, or str, "
+            f"not {type(value)}.")
+
     def _eranos_MTs(self, value):
         """
-        Set the MTs attribute for ERANOS files.
+        Set the channel mapping for ERANOS files.
 
         Parameters
         ----------
@@ -817,18 +815,23 @@ class Sensitivity(SensitivityAlgebraMixin):
         else:
             value = sorted(value)
 
-        MTs = OrderedDict()
+        channels = OrderedDict()
         for imt, mt in enumerate(value):
             if not isinstance(mt, int):
                 raise ValueError(
                     f"Input MTs from ERANOS for attribute MTs must be of type int, not {type(mt)}!"
                 )
-            MTs[mt] = imt
-        self._MTs = MTs
+            if mt == 452:
+                channel = SensitivityChannel.from_alias("nubar total")
+            else:
+                channel = SensitivityChannel.from_endf(
+                    average_MF=3, average_MT=mt, name=f"xs {mt}")
+            channels[channel] = imt
+        self._channels = channels
 
     def _serpent_MTs(self, value):
         """
-        Set the MTs attribute for Serpent files.
+        Set the channel mapping for Serpent files.
 
         Parameters
         ----------
@@ -838,35 +841,24 @@ class Sensitivity(SensitivityAlgebraMixin):
         Raises
         ------
         ValueError
-            If the input is not iterable or MTs cannot be parsed.
+            If the input is not iterable or channels cannot be parsed.
         """
         if not isinstance(value, Iterable):
             raise ValueError(
                 f"Expected an Iterable instead of type {type(value)} "
                 "for 'Sensitivity.MTs'")
 
-        MTs = OrderedDict()
-        endf_channels = OrderedDict()
+        channels = OrderedDict()
 
         for imt, mt in enumerate(value):
+            if isinstance(mt, SensitivityChannel):
+                channels[mt] = imt
+                continue
             # numeric Serpent perturbations
             if isinstance(mt, (int, np.integer)):
                 mt = int(mt)
-                MTs[mt] = imt
-
-                channel = SERPENT_NUMERIC_ENDF_CHANNELS.get(mt)
-
-                if channel is not None:
-                    endf_channels[mt] = channel.copy()
-                else:
-                    endf_channels[mt] = {
-                        "label": f"xs {mt}",
-                        "MF": 3,
-                        "MT": mt,
-                        "covariance_MF": 33,
-                        "covariance_MTs": (mt, ),
-                    }
-
+                channel = self._coerce_channel(mt)
+                channels[channel] = imt
                 continue
 
             if not isinstance(mt, str):
@@ -876,52 +868,10 @@ class Sensitivity(SensitivityAlgebraMixin):
 
             # string Serpent perturbations
             label = " ".join(mt.split()).lower()
+            channel = self._coerce_channel(label)
+            channels[channel] = imt
 
-            if "xs" in label:
-                if "total" not in label:
-                    key = int(label.split(" ")[1])
-                else:
-                    key = 1
-                MTs[key] = imt
-                endf_channels[key] = {
-                    "label": label,
-                    "MF": 3,
-                    "MT": key,
-                    "covariance_MF": 33,
-                    "covariance_MTs": (key, ),
-                }
-
-            elif "nubar" in label:
-                if label == "nubar total":
-                    key = 452
-                elif label == "nubar delayed":
-                    key = 455
-                elif label == "nubar prompt":
-                    key = 456
-                else:
-                    key = label
-                MTs[key] = imt
-                channel = SERPENT_ENDF_CHANNELS.get(label)
-                if channel is not None:
-                    endf_channels[key] = {"label": label, **channel}
-
-            else:
-                key = label
-                MTs[key] = imt
-                channel = SERPENT_ENDF_CHANNELS.get(label)
-                if channel is not None:
-                    endf_channels[key] = {"label": label, **channel}
-                else:
-                    endf_channels[key] = {
-                        "label": label,
-                        "MF": None,
-                        "MT": None,
-                        "covariance_MF": None,
-                        "covariance_MTs": (),
-                    }
-
-        self._MTs = MTs
-        self._endf_channels = endf_channels
+        self._channels = channels
 
     @property
     def endf_channels(self):
@@ -932,7 +882,8 @@ class Sensitivity(SensitivityAlgebraMixin):
         have a unique ENDF MT. This metadata keeps the Serpent key separate
         from the ENDF covariance channel used by sandwich calculations.
         """
-        return getattr(self, "_endf_channels", OrderedDict())
+        return OrderedDict((channel, self._channel_to_endf_dict(channel))
+                           for channel in self.channels)
 
     def get_covariance_sensitivity_keys(self, covariance_MF, covariance_MT):
         """
@@ -1164,18 +1115,18 @@ class Sensitivity(SensitivityAlgebraMixin):
     @property
     def n_MTs(self):
         """
-        Number of MTs.
+        Number of sensitivity channels.
 
         Returns
         -------
         int
-            Number of MTs.
+            Number of sensitivity channels.
         """
         if hasattr(self, 'MTs'):
             return len(self.MTs)
         else:
             raise ValueError(
-                "'MTs' attribute is not defined, cannot get number of responses 'n_MTs'."
+                "'channels' attribute is not defined, cannot get number of channels 'n_MTs'."
             )
 
     @property
@@ -1186,7 +1137,8 @@ class Sensitivity(SensitivityAlgebraMixin):
         Returns
         -------
         np.ndarray
-            Sensitivity array whose shape is (nResp, nMat, nZaid, nMTs, nE).
+            Sensitivity array whose shape is
+            (nResp, nMat, nZaid, nChannels, nE).
         """
         return self._sens
 
@@ -1226,7 +1178,7 @@ class Sensitivity(SensitivityAlgebraMixin):
         Sets
         ----
         self._sens : np.ndarray
-            Sensitivity array with shape (nResp, nMat, nZaid, nMTs, nE).
+            Sensitivity array with shape (nResp, nMat, nZaid, nChannels, nE).
         """
         nResp = len(self.responses)
         nMat = len(self.materials)
@@ -1259,7 +1211,7 @@ class Sensitivity(SensitivityAlgebraMixin):
         Sets
         ----
         self._sens : np.ndarray
-            Sensitivity array with shape (nResp, nMat, nZaid, nMTs, nE).
+            Sensitivity array with shape (nResp, nMat, nZaid, nChannels, nE).
         """
         arr_shape = None
         for k, v in value.items():
@@ -1295,7 +1247,8 @@ class Sensitivity(SensitivityAlgebraMixin):
         Returns
         -------
         np.ndarray
-            Sensitivity array whose shape is (nResp, nMat, nZaid, nMTs, nE).
+            Sensitivity array whose shape is
+            (nResp, nMat, nZaid, nChannels, nE).
         """
         return self._sens_rsd
 
@@ -1344,7 +1297,8 @@ class Sensitivity(SensitivityAlgebraMixin):
         Sets
         ----
         self._sens_rsd : np.ndarray
-            Sensitivity RSD array with shape (nResp, nMat, nZaid, nMTs, nE).
+            Sensitivity RSD array with shape
+            (nResp, nMat, nZaid, nChannels, nE).
 
         Raises
         ------
@@ -1377,12 +1331,62 @@ class Sensitivity(SensitivityAlgebraMixin):
 
         self._sens_rsd = sens_rsd
 
-    def get(self,
-            resp=None,
-            mat=None,
-            MT=None,
-            za=None,
-            g=None,
+    def _select_channels(self, *, MT=None, channel=None, average_MF=None,
+                         covariance_MF=None, covariance_MT=None, L=None):
+        selected = list(self.channels.keys())
+
+        if channel is not None:
+            values = channel if isinstance(channel, list) else [channel]
+            selected = [self._coerce_channel(value) for value in values]
+            missing = [value for value in selected if value not in self.channels]
+            if missing:
+                raise ValueError(f"Channel(s) {missing} not available!")
+
+        if MT is not None:
+            values = MT if isinstance(MT, list) else [MT]
+            selected_from_mt = []
+            for value in values:
+                if isinstance(value, SensitivityChannel):
+                    matches = [value] if value in self.channels else []
+                else:
+                    matches = [
+                        candidate for candidate in self.channels
+                        if candidate.average_MT == value
+                        or candidate.covariance_MT == value
+                    ]
+                if not matches:
+                    raise ValueError(f"MT {value} not available!")
+                if len(matches) > 1:
+                    raise ValueError(
+                        f"MT {value} is ambiguous; matching channels are "
+                        f"{matches}. Use channel=... or specify MF/L.")
+                selected_from_mt.extend(matches)
+            selected = selected_from_mt
+
+        filters = {"average_MF": average_MF,
+                   "covariance_MF": covariance_MF,
+                   "covariance_MT": covariance_MT,
+                   "L": L}
+        for attr, value in filters.items():
+            if value is None:
+                continue
+            if attr == "covariance_MT":
+                selected = [
+                    candidate for candidate in selected
+                    if value in candidate.covariance_MTs
+                ]
+            else:
+                selected = [
+                    candidate for candidate in selected
+                    if getattr(candidate, attr) == value
+                ]
+
+        if not selected:
+            raise ValueError("No sensitivity channels match the requested filters.")
+        return selected
+
+    def get(self, resp=None, mat=None, MT=None, channel=None, average_MF=None,
+            covariance_MF=None, covariance_MT=None, L=None, za=None, g=None,
             group_order='ascending'):
         """
         Extract sensitivity profiles and uncertainties for specified parameters.
@@ -1396,8 +1400,12 @@ class Sensitivity(SensitivityAlgebraMixin):
             Material(s) to extract, e.g., 'total', 'm1'.
             If None, all materials are extracted.
         MT : int or list, optional
-            MT number(s) to extract, e.g., 2, 4, 18.
-            If None, all MTs are extracted.
+            Average MT number(s) to extract. Accepted only when the MT maps to
+            one unambiguous channel.
+        channel : SensitivityChannel or list, optional
+            Canonical channel(s) to extract.
+        average_MF, covariance_MF, covariance_MT, L : int, optional
+            ENDF-aware channel filters.
         za : str, int, or list, optional
             ZA string(s) or number(s) to extract, e.g., 'Pu-239', 942390 or ['Pu-239', 'Pu-240'].
             If None, all ZAIDs are extracted.
@@ -1445,23 +1453,11 @@ class Sensitivity(SensitivityAlgebraMixin):
             for val in self.materials:
                 iM.append(self.materials[val])
 
-        # --- get MT indexes
-        if MT is not None:
-            if isinstance(MT, int):
-                if MT not in self.MTs:
-                    raise ValueError(f"MT {MT} not available!")
-                else:
-                    iP = [self.MTs[MT]]
-            elif not isinstance(MT, list):
-                raise ValueError(
-                    f"'MT' should be of type int or list, not of type {type(MT)}"
-                )
-            else:
-                for val in MT:
-                    iP.append(self.MTs[val])
-        else:
-            for mt in self.MTs:
-                iP.append(self.MTs[mt])
+        # --- get channel indexes
+        for selected_channel in self._select_channels(
+                MT=MT, channel=channel, average_MF=average_MF,
+                covariance_MF=covariance_MF, covariance_MT=covariance_MT, L=L):
+            iP.append(self.channels[selected_channel])
 
         # --- get ZA indexes
         if za is not None:
@@ -1934,6 +1930,7 @@ def _expose_public_aliases():
     if parent is not None:
         parent.Sensitivity = Sensitivity
         parent.SensitivityError = SensitivityError
+        parent.SensitivityChannel = SensitivityChannel
 
 
 _expose_public_aliases()

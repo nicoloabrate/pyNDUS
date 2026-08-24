@@ -4,7 +4,8 @@ from .sandwich import Sandwich, SandwichError
 
 __all__ = [
             "Covariance", "CovarianceError", "Sensitivity", "SensitivityError",
-            "SensitivityAlgebraError", "Sandwich", "SandwichError",
+            "SensitivityAlgebraError", "SensitivityChannel", "Sandwich",
+            "SandwichError",
             ]
 
 
@@ -29,6 +30,10 @@ def __getattr__(name):
     if name == "SensitivityAlgebraError":
         from ._sensitivity_algebra import SensitivityAlgebraError
         return SensitivityAlgebraError
+
+    if name == "SensitivityChannel":
+        from .channels import SensitivityChannel
+        return SensitivityChannel
 
     if name == "Sandwich":
         return Sandwich

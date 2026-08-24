@@ -181,15 +181,6 @@ class Covariance():
             endf6_dir.mkdir(parents=True, exist_ok=True)
             errorr_dir.mkdir(parents=True, exist_ok=True)
 
-            # Get the ENDF-6 file.
-            endf6_path = endf6_dir / f"{self.zais}.endf"
-
-            if endf6_path.exists():
-                endf6_tape = sandy.Endf6.from_file(endf6_path)
-            else:
-                endf6_tape = sandy.get_endf6_file(lib, "xs", zaid)
-                endf6_tape.to_file(endf6_path)
-
             # Load all ERRORR files already available.
             errorr_out.update(
                 Covariance._read_existing_errorr_files(errorr_dir,
@@ -205,6 +196,15 @@ class Covariance():
                     group_structure_errorr = (self.group_structure_ev)
                 else:
                     group_structure_errorr = None
+
+                # Get the ENDF-6 file.
+                endf6_path = endf6_dir / f"{self.zais}.endf"
+
+                if endf6_path.exists():
+                    endf6_tape = sandy.Endf6.from_file(endf6_path)
+                else:
+                    endf6_tape = sandy.get_endf6_file(lib, "xs", zaid)
+                    endf6_tape.to_file(endf6_path)
 
                 generated = Covariance.sandy_calls_errorr(
                     endf6_tape=endf6_tape,
@@ -698,11 +698,85 @@ class Covariance():
         map_MF2MT = {}
 
         for mf in rcov.keys():
-            map_MF2MT[mf] = rcov[mf].mt
-            # remove the heading MT (no covariance data)
-            map_MF2MT[mf].remove(451)
+            map_MF2MT[mf] = self._available_mts_from_errorr(rcov[mf])
 
         self._MFs2MTs = map_MF2MT
+
+    @staticmethod
+    def _available_mts_from_errorr(errorr):
+        """
+        Return the MT numbers that have covariance data in an ERRORR object.
+
+        SANDY exposes ``Errorr.mt`` with slightly different shapes depending
+        on the covariance MF and version.  In particular, dictionary-like
+        metadata can use MAT/ZA identifiers as keys.  The covariance matrix
+        itself is therefore the source of truth when it is a pandas DataFrame;
+        the raw metadata is used only as a fallback for light objects/tests.
+        """
+        try:
+            data = errorr.get_cov().data
+        except Exception:
+            data = None
+
+        matrix_mts = Covariance._mts_from_covariance_dataframe(data)
+        if matrix_mts is not None:
+            return matrix_mts
+
+        return Covariance._mts_from_errorr_metadata(getattr(errorr, "mt", []))
+
+    @staticmethod
+    def _mts_from_covariance_dataframe(data):
+        """Extract MT levels from a covariance DataFrame, if possible."""
+        if not isinstance(data, pd.DataFrame):
+            return None
+
+        mts = []
+        for axis in (data.index, data.columns):
+            if isinstance(axis, pd.MultiIndex):
+                if "MT" in axis.names:
+                    mts.extend(axis.get_level_values("MT"))
+                else:
+                    for level in range(axis.nlevels):
+                        mts.extend(axis.get_level_values(level))
+            elif axis.name == "MT":
+                mts.extend(axis)
+
+        return sorted(Covariance._valid_mts(mts))
+
+    @staticmethod
+    def _mts_from_errorr_metadata(metadata):
+        """Extract MT numbers from ERRORR metadata without reading dict keys."""
+        values = []
+
+        def collect(value):
+            if isinstance(value, dict):
+                for nested in value.values():
+                    collect(nested)
+                return
+            if isinstance(value, (str, bytes)):
+                values.append(value)
+                return
+            if isinstance(value, Iterable):
+                for nested in value:
+                    collect(nested)
+                return
+            values.append(value)
+
+        collect(metadata)
+        return sorted(Covariance._valid_mts(values))
+
+    @staticmethod
+    def _valid_mts(values):
+        """Normalize MT-like values and drop header MT=451."""
+        mts = set()
+        for value in values:
+            try:
+                mt = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= mt <= 999 and mt != 451:
+                mts.add(mt)
+        return mts
 
     @property
     def mat(self):
@@ -819,10 +893,16 @@ class Covariance():
             raise ValueError(f"MF={MF} not available in covariance matrix.")
 
         # check existence of requested MT in the selected MF
+        available = self.MFs2MTs[MF]
+        resolved_MT = []
         for val in MT:
-            if val not in self.MFs2MTs[MF]:
+            resolved = self._resolve_covariance_mt_alias(MF, val, available)
+            if resolved is None:
                 raise ValueError(
-                    f"MT={val} not available in covariance matrix MF={MF}.")
+                    f"MT={val} not available in covariance matrix MF={MF}. "
+                    f"Available MTs are {available}.")
+            resolved_MT.append(resolved)
+        MT = resolved_MT
 
         # --- get covariance
         if single_cov:
@@ -834,6 +914,25 @@ class Covariance():
             return out_cov.to_numpy()
         else:
             return out_cov
+
+    @staticmethod
+    def _resolve_covariance_mt_alias(MF, MT, available):
+        """
+        Resolve supported covariance MT aliases to the actual stored MT.
+
+        MF34/MT251 is the reduced covariance of the first elastic Legendre
+        moment, while some ERRORR files expose the same usable block as
+        MF34/MT2.  Both are accepted for direct extraction when only one form
+        is present in the covariance matrix.
+        """
+        candidates = [MT]
+        if MF == "errorr34" and int(MT) in {2, 251}:
+            candidates.extend([2, 251])
+
+        for candidate in candidates:
+            if candidate in available:
+                return candidate
+        return None
 
     @staticmethod
     def sandy_calls_errorr(endf6_tape, zaid, temperature, group_structure,

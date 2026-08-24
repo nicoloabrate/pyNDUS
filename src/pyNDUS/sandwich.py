@@ -98,21 +98,42 @@ def _errorr_mf_to_int(MF):
     return int(_normalize_errorr_mf(MF).replace("errorr", ""))
 
 
+def _is_valid_endf_mt(MT):
+    """Return whether a value is plausible as an ENDF MT number."""
+    try:
+        mt = int(MT)
+    except (TypeError, ValueError):
+        return False
+    return 1 <= mt <= 999
+
+
 def _sensitivity_keys_for_covariance(sens, MF, MT):
     """
     Return sensitivity keys compatible with an ENDF covariance MF/MT channel.
 
-    Real Serpent sensitivities expose ``endf_channels`` metadata so that
+    Sensitivities expose ``endf_channels`` metadata so that
     channels such as MF35/MT18 resolve to ``"chi prompt"`` avoiding ambiguity
     with the fission cross-section sensitivity ``MF33/MT18``. 
     """
+    if not _is_valid_endf_mt(MT):
+        raise SandwichError(
+            f"Invalid covariance MT={MT!r} for MF={_errorr_mf_to_int(MF)}. "
+            "This looks like a MAT/ZAID value parsed as an MT; inspect the "
+            "corresponding Covariance.MFs2MTs and ERRORR covariance index.")
+
     mf_int = _errorr_mf_to_int(MF)
     if hasattr(sens, "get_covariance_sensitivity_keys"):
         keys = sens.get_covariance_sensitivity_keys(mf_int, MT)
+        keys = _select_supported_mf34_keys(keys, mf_int, MT)
         if keys:
             return keys
         if getattr(sens, "endf_channels", None):
             return []
+
+    for key in getattr(sens, "channels", {}).keys():
+        if hasattr(key, "matches_covariance") and key.matches_covariance(
+                mf_int, MT):
+            return [key]
 
     if MT in sens.MTs:
         return [MT]
@@ -128,6 +149,16 @@ def _single_sensitivity_key_for_covariance(sens, MF, MT):
     ambiguous match is rejected instead of silently pairing the wrong moment.
     """
     keys = _sensitivity_keys_for_covariance(sens, MF, MT)
+    unsupported = [
+        key for key in keys
+        if _errorr_mf_to_int(MF) == 34 and getattr(key, "L", None) not in (
+            None, 1)
+    ]
+    if unsupported:
+        raise SandwichError(
+            "MF34 covariance propagation currently supports only the first "
+            f"elastic Legendre moment (L=1). Requested MF={_errorr_mf_to_int(MF)} "
+            f"MT={MT} resolves to unsupported channel(s): {unsupported}.")
     if len(keys) > 1:
         raise SandwichError(
             f"Covariance MF={_errorr_mf_to_int(MF)} MT={MT} matches multiple "
@@ -136,6 +167,25 @@ def _single_sensitivity_key_for_covariance(sens, MF, MT):
     if not keys:
         return None
     return keys[0]
+
+
+def _select_supported_mf34_keys(keys, mf_int, MT):
+    """
+    Keep the currently supported MF34 Legendre covariance interpretation.
+
+    pyNDUS stores covariance blocks by MF/MT only, while a full MF34/MT2
+    representation can contain several Legendre orders.  Until an L-resolved
+    covariance representation is available, MF34/MT2 is treated as the
+    operational alias of the reduced L=1/MT251 block when that sensitivity is
+    present.
+    """
+    if mf_int != 34 or int(MT) not in {2, 251}:
+        return keys
+
+    p1_keys = [key for key in keys if getattr(key, "L", None) == 1]
+    if p1_keys:
+        return p1_keys
+    return keys
 
 
 def _covariance_mt_requested_by_user(sens, MF, MT, requested_MTs):
@@ -152,11 +202,75 @@ def _covariance_mt_requested_by_user(sens, MF, MT, requested_MTs):
         for channel in sens.endf_channels.values():
             if channel.get("covariance_MF") != mf_int:
                 continue
-            if MT not in channel.get("covariance_MTs", ()):
+            covariance_MTs = channel.get("covariance_MTs", ())
+            if MT not in covariance_MTs:
                 continue
-            if channel.get("MT") in requested_MTs:
+            if (channel.get("MT") in requested_MTs
+                    or any(mt in requested_MTs for mt in covariance_MTs)):
                 return True
     return False
+
+
+def _channel_requested_by_user(channel, requested_MTs):
+    if requested_MTs is None:
+        return True
+    return (getattr(channel, "average_MT", None) in requested_MTs
+            or getattr(channel, "covariance_MT", None) in requested_MTs
+            or any(mt in requested_MTs
+                   for mt in getattr(channel, "covariance_MTs", ())))
+
+
+def _map_mf2mt_from_sensitivity_channels(sens,
+                                         sens2=None,
+                                         selected_MFs=None,
+                                         requested_MTs=None):
+    """
+    Build an MF-to-MT covariance map from sensitivity-channel metadata.
+
+    This is used by similarity calculations when no covariance object is
+    available.
+    """
+    allowed_MFs = None if selected_MFs is None else set(selected_MFs)
+    output = OrderedDict()
+
+    for current in (sens, sens2):
+        if current is None:
+            continue
+
+        channels = getattr(current, "channels", None)
+        if channels:
+            for channel in channels:
+                cov_mf = getattr(channel, "covariance_MF", None)
+                cov_mt = getattr(channel, "covariance_MT", None)
+                if cov_mf is None or cov_mt is None:
+                    continue
+                mf = _normalize_errorr_mf(cov_mf)
+                if allowed_MFs is not None and mf not in allowed_MFs:
+                    continue
+                if not _channel_requested_by_user(channel, requested_MTs):
+                    continue
+                output.setdefault(mf, [])
+                if cov_mt not in output[mf]:
+                    output[mf].append(cov_mt)
+            continue
+
+        # Fallback for light test doubles and old user objects: plain MTs are
+        # interpreted as cross-section channels.
+        mf = "errorr33"
+        if allowed_MFs is not None and mf not in allowed_MFs:
+            continue
+        for mt in current.MTs:
+            if requested_MTs is not None and mt not in requested_MTs:
+                continue
+            output.setdefault(mf, [])
+            if mt not in output[mf]:
+                output[mf].append(mt)
+
+    for mf, mts in output.items():
+        output[mf] = sorted(mts)
+        output[mf] = _drop_serpent_total_nubar_if_redundant(
+            sens, sens2, mf, output[mf])
+    return output
 
 
 def _has_covariance_sensitivity(sens, MF, MT):
@@ -690,51 +804,15 @@ class Sandwich:
                     self.MTs[za] = selected_cov_mts.copy()
 
             else:
-                if get_MTs:
-                    if za in za_dict.keys():
-                        self.MTs[za] = sens_MTs[za]
-                        # remove total XS to avoid double counting the profiles
-                        if 1 in self.MTs[za]:
-                            if len(self.MTs[za]) > 2:
-                                self.MTs[za].remove(1)
-                            elif max(self.MTs[za]) < 110 and len(self.MTs[za]) == 2:
-                                self.MTs[za].remove(1)
-                        # remove MF=31 (452) from serpent sensitivities to avoid double counting the profiles
-                        if sens.reader == 'serpent':
-                            if 452 in self.MTs[za]:
-                                if 455 in self.MTs[za] and 456 in self.MTs[za]:
-                                    self.MTs[za].remove(452)
-                        if sens2 is not None:
-                            if sens2.reader == 'serpent':
-                                if 452 in self.MTs[za]:
-                                    if 455 in self.MTs[za] and 456 in self.MTs[za]:
-                                        self.MTs[za].remove(452)
-
-                else:
-                    intersection = list(set(list_MTs) & set(sens_MTs[za]))
-                    sens_MTs[za] = intersection.copy()
-                    if za in za_dict.keys():
-                        self.MTs[za] = intersection.copy()
-
-                        if 1 in self.MTs[za]:
-                            if len(self.MTs[za]) > 2:
-                                self.MTs[za].remove(1)
-                            elif max(self.MTs[za]) < 110 and len(self.MTs[za]) == 2:
-                                self.MTs[za].remove(1)
-                        # remove MF=31 (452) from serpent sensitivities to avoid double counting the profiles
-                        if sens.reader == 'serpent':
-                            if 452 in self.MTs[za]:
-                                if 455 in self.MTs[za] and 456 in self.MTs[za]:
-                                    self.MTs[za].remove(452)
-                        if sens2 is not None:
-                            if sens2.reader == 'serpent':
-                                if 452 in self.MTs[za]:
-                                    if 455 in self.MTs[za] and 456 in self.MTs[za]:
-                                        self.MTs[za].remove(452)
-
-                if za in self.MTs:
-                    default_MFs = selected_MFs or ["errorr33"]
-                    map_MF2MT[za] = {mf: self.MTs[za].copy() for mf in default_MFs}
+                if za in za_dict.keys():
+                    requested_MTs = None if get_MTs else list_MTs
+                    map_MF2MT[za] = _map_mf2mt_from_sensitivity_channels(
+                        sens, sens2, selected_MFs=selected_MFs,
+                        requested_MTs=requested_MTs)
+                    self.MTs[za] = sorted(
+                        {mt
+                         for mts in map_MF2MT[za].values()
+                         for mt in mts})
 
         if len(za_dict) == 0:
             raise SandwichError(
@@ -749,8 +827,9 @@ class Sandwich:
         # --- assign output
         if representativity:
             representativity, dict_map = self.compute_representativity(
-                sens, sens2, covmat, list_resp, map_MF2MT, self.za, self.sens_MC,
-                sigma=self.sigma, sum_MFs=sum_MFs, include_MF=include_MF)
+                sens, sens2, covmat, list_resp, map_MF2MT, self.za,
+                self.sens_MC, sigma=self.sigma, sum_MFs=sum_MFs,
+                include_MF=include_MF)
             self.representativity = representativity
             self.representativity_table = representativity.attrs.get("table")
             self.representativity_by_mf = representativity.attrs.get("by_mf")
@@ -765,8 +844,9 @@ class Sandwich:
             self.dict_map = dict_map
         else:
             uncertainty_variance, dict_map = self.compute_uncertainty(
-                sens, covmat, list_resp, list_mat, map_MF2MT, self.za, self.sens_MC,
-                sigma=self.sigma, sum_MFs=sum_MFs, include_MF=include_MF)
+                sens, covmat, list_resp, list_mat, map_MF2MT, self.za,
+                self.sens_MC, sigma=self.sigma, sum_MFs=sum_MFs,
+                include_MF=include_MF)
             uncertainty_signed_sqrt = self._signed_sqrt_uncertainty(
                 uncertainty_variance)
             self.uncertainty_variance = uncertainty_variance
@@ -780,8 +860,7 @@ class Sandwich:
             self.uncertainty_signed_sqrt_by_mf = (
                 uncertainty_signed_sqrt.attrs.get("by_mf"))
             self.uncertainty_standard_deviation = (
-                self._standard_deviation_from_variance(
-                    uncertainty_variance))
+                self._standard_deviation_from_variance(uncertainty_variance))
 
             if uncertainty_output == "signed_sqrt":
                 uncertainty = uncertainty_signed_sqrt
@@ -1031,8 +1110,7 @@ class Sandwich:
         table = variance.attrs.get("table")
         if table is not None:
             table = table.copy()
-            table["value"] = table["value"].map(
-                Sandwich._signed_sqrt_value)
+            table["value"] = table["value"].map(Sandwich._signed_sqrt_value)
         by_mf = transform(variance.attrs.get("by_mf"))
         signed_sqrt.attrs["table"] = table
         signed_sqrt.attrs["by_mf"] = by_mf
@@ -1183,28 +1261,26 @@ class Sandwich:
                                   and za in sens2.zaid)
 
                         if exist1:
-                            result1 = sens.get(
-                                resp=[resp], mat=[mat], MT=[sens_key1], za=[za],
-                                group_order="ascending")
+                            result1 = sens.get(resp=[resp], mat=[mat],
+                                               MT=[sens_key1], za=[za],
+                                               group_order="ascending")
                             if sens_MC and isinstance(result1, tuple):
                                 avg1, rsd1 = result1
                                 vector1 = utils.np2unp(
-                                    np.squeeze(avg1),
-                                    sigma * np.squeeze(rsd1))
+                                    np.squeeze(avg1), sigma * np.squeeze(rsd1))
                             else:
                                 vector1 = np.squeeze(result1)
                         else:
                             vector1 = np.zeros((sens.n_groups, ))
 
                         if exist2:
-                            result2 = sens2.get(
-                                resp=[resp], mat=[mat2], MT=[sens_key2], za=[za],
-                                group_order="ascending")
+                            result2 = sens2.get(resp=[resp], mat=[mat2],
+                                                MT=[sens_key2], za=[za],
+                                                group_order="ascending")
                             if sens_MC and isinstance(result2, tuple):
                                 avg2, rsd2 = result2
                                 vector2 = utils.np2unp(
-                                    np.squeeze(avg2),
-                                    sigma * np.squeeze(rsd2))
+                                    np.squeeze(avg2), sigma * np.squeeze(rsd2))
                             else:
                                 vector2 = np.squeeze(result2)
                         else:
@@ -1225,34 +1301,28 @@ class Sandwich:
                                 denominator_nominal = getattr(
                                     denominator, "nominal_value", denominator)
                                 if denominator_nominal != 0:
-                                    value = (
-                                        np.dot(vector1.T, vector2)
-                                        / denominator
-                                    )
+                                    value = (np.dot(vector1.T, vector2) /
+                                             denominator)
                                 else:
                                     value = 0
                             else:
                                 value = 0
 
-                            _merge_or_set(
-                                output[resp][za], (mt1, mt2), value, mf,
-                                sum_MFs=sum_MFs)
+                            _merge_or_set(output[resp][za], (mt1, mt2), value,
+                                          mf,
+                                          sum_MFs=sum_MFs)
 
         # Convert the already pairwise-normalized output to a DataFrame.
         records = []
         for resp, zas in output.items():
             for za, mt_matrix in zas.items():
                 for (mf, mt1, mt2), value in mt_matrix.items():
-                    records.append(
-                        (resp, za_dict[za], mf, mt1, mt2, value))
+                    records.append((resp, za_dict[za], mf, mt1, mt2, value))
 
         similarity = _build_result_frames(
-            records,
-            ["RESPONSE", "ZA", "MF", "MT_row", "MT_col", "value"],
-            ["RESPONSE", "ZA"],
-            include_MF=include_MF,
-            sum_MFs=sum_MFs,
-            ).fillna(0)
+            records, ["RESPONSE", "ZA", "MF", "MT_row", "MT_col", "value"],
+            ["RESPONSE", "ZA"], include_MF=include_MF,
+            sum_MFs=sum_MFs).fillna(0)
         dict_map = dict_map
 
         return similarity, dict_map
@@ -1362,7 +1432,8 @@ class Sandwich:
                             else:
                                 if exist:
                                     S = np.squeeze(
-                                        sens.get(resp=[resp], mat=[mat], MT=[sens_key], za=[za],
+                                        sens.get(resp=[resp], mat=[mat], MT=[sens_key],
+                                                 za=[za],
                                                  group_order="ascending"))
                                 else:
                                     S = np.zeros((sens.n_groups, ))
@@ -1374,16 +1445,17 @@ class Sandwich:
                             if cov_df is not None:
                                 if exist:
                                     _merge_or_set(output[resp][mat][za], (mt, mt),
-                                                  np.dot(S.T, np.dot(C, S)), mf,
+                                                  np.dot(S.T, np.dot(C, S)),
+                                                  mf,
                                                   sum_MFs=sum_MFs)
                                 else:
-                                    _merge_or_set(output[resp][mat][za], (mt, mt),
-                                                  0, mf,
+                                    _merge_or_set(output[resp][mat][za], (mt, mt), 0,
+                                                  mf,
                                                   sum_MFs=sum_MFs)
                             else:
                                 if missing_cov == "zero":
-                                    _merge_or_set(output[resp][mat][za], (mt, mt),
-                                                  0, mf,
+                                    _merge_or_set(output[resp][mat][za], (mt, mt), 0,
+                                                  mf,
                                                   sum_MFs=sum_MFs)
                                 elif missing_cov == "raise":
                                     raise ValueError(
@@ -1400,8 +1472,8 @@ class Sandwich:
                                             mf,
                                             sum_MFs=sum_MFs)
                                     else:
-                                        _merge_or_set(output[resp][mat][za],
-                                                      (mt, mt), 0, mf,
+                                        _merge_or_set(output[resp][mat][za], (mt, mt),
+                                                      0, mf,
                                                       sum_MFs=sum_MFs)
                                 else:
                                     raise ValueError(
@@ -1431,7 +1503,7 @@ class Sandwich:
                             if sens_MC:
                                 if exist:
                                     S_avg_r, S_rsd_r = sens.get(
-                                        [resp], [mat], [sens_key_r], [za],
+                                        resp=[resp], mat=[mat], MT=[sens_key_r], za=[za],
                                         group_order="ascending")
                                 else:
                                     S_avg_r = np.zeros((sens.n_groups, ))
@@ -1439,7 +1511,7 @@ class Sandwich:
 
                                 if exist2:
                                     S_avg_l, S_rsd_l = sens.get(
-                                        [resp], [mat], [sens_key_l], [za],
+                                        resp=[resp], mat=[mat], MT=[sens_key_l], za=[za],
                                         group_order="ascending")
                                 else:
                                     S_avg_l = np.zeros((sens.n_groups, ))
@@ -1461,16 +1533,16 @@ class Sandwich:
                             else:
                                 if exist:
                                     S_r = np.squeeze(
-                                        sens.get([resp], [mat], [sens_key_r],
-                                                 [za],
+                                        sens.get(resp=[resp], mat=[mat],
+                                                 MT=[sens_key_r], za=[za],
                                                  group_order="ascending"))
                                 else:
                                     S_r = np.zeros((sens.n_groups, ))
 
                                 if exist2:
                                     S_l = np.squeeze(
-                                        sens.get([resp], [mat], [sens_key_l],
-                                                 [za],
+                                        sens.get(resp=[resp], mat=[mat],
+                                                 MT=[sens_key_l], za=[za],
                                                  group_order="ascending"))
                                 else:
                                     S_l = np.zeros((sens.n_groups, ))
@@ -1507,7 +1579,8 @@ class Sandwich:
                                             corr=missing_cov_corr)
                                         _merge_or_set(output[resp][mat][za], nm,
                                                       np.dot(S_r.T,
-                                                             np.dot(C_fb, S_l)), mf,
+                                                             np.dot(C_fb, S_l)),
+                                                      mf,
                                                       sum_MFs=sum_MFs)
                                     else:
                                         _merge_or_set(output[resp][mat][za], nm, 0, mf,
@@ -1529,10 +1602,8 @@ class Sandwich:
         uncertainty = _build_result_frames(
             records,
             ["RESPONSE", "MATERIAL", "ZA", "MF", "MT_row", "MT_col", "value"],
-            ["RESPONSE", "MATERIAL", "ZA"],
-            include_MF=include_MF,
-            sum_MFs=sum_MFs,
-        )
+            ["RESPONSE", "MATERIAL", "ZA"], include_MF=include_MF,
+            sum_MFs=sum_MFs)
 
         return uncertainty, dict_map
 
@@ -1663,15 +1734,17 @@ class Sandwich:
                         else:
                             if exist:
                                 S_r = np.squeeze(
-                                    sens.get(resp=[resp], mat=[mat], MT=[sens_key], za=[za],
+                                    sens.get(resp=[resp], mat=[mat], MT=[sens_key],
+                                             za=[za],
                                              group_order="ascending"))
                             else:
                                 S_r = np.zeros((sens.n_groups, ))
 
                             if exist2:
                                 S_l = np.squeeze(
-                                    sens2.get(resp=[resp], mat=[mat2], MT=[sens2_key],
-                                              za=[za], group_order="ascending"))
+                                    sens2.get(resp=[resp], mat=[mat2],
+                                              MT=[sens2_key], za=[za],
+                                              group_order="ascending"))
                             else:
                                 S_l = np.zeros((sens.n_groups, ))
 
@@ -1683,7 +1756,8 @@ class Sandwich:
                         if cov_df is not None:
                             if exist and exist2:
                                 _merge_or_set(output[resp][za], (mt, mt),
-                                              np.dot(S_r.T, np.dot(C, S_l)), mf,
+                                              np.dot(S_r.T, np.dot(C, S_l)),
+                                              mf,
                                               sum_MFs=sum_MFs)
                             else:
                                 _merge_or_set(output[resp][za], (mt, mt), 0, mf,
@@ -1705,10 +1779,12 @@ class Sandwich:
                                         corr=missing_cov_corr)
                                     _merge_or_set(output[resp][za], (mt, mt),
                                                   np.dot(S_r.T,
-                                                         np.dot(C_fb, S_l)), mf,
+                                                         np.dot(C_fb, S_l)),
+                                                  mf,
                                                   sum_MFs=sum_MFs)
                                 else:
-                                    _merge_or_set(output[resp][za], (mt, mt), 0, mf,
+                                    _merge_or_set(output[resp][za], (mt, mt), 0,
+                                                  mf,
                                                   sum_MFs=sum_MFs)
 
                             else:
@@ -1735,7 +1811,7 @@ class Sandwich:
                         if sens_MC:
                             if exist:
                                 S_avg_r, S_rsd_r = sens.get(
-                                    [resp], [mat], [sens_key_r], [za],
+                                    resp=[resp], mat=[mat], MT=[sens_key_r], za=[za],
                                     group_order="ascending")
                             else:
                                 S_avg_r = np.zeros((sens.n_groups, ))
@@ -1743,7 +1819,7 @@ class Sandwich:
 
                             if exist2:
                                 S_avg_l, S_rsd_l = sens2.get(
-                                    [resp], [mat2], [sens2_key_l], [za],
+                                    resp=[resp], mat=[mat2], MT=[sens2_key_l], za=[za],
                                     group_order="ascending")
                             else:
                                 S_avg_l = np.zeros((sens.n_groups, ))
@@ -1763,15 +1839,16 @@ class Sandwich:
                         else:
                             if exist:
                                 S_r = np.squeeze(
-                                    sens.get([resp], [mat], [sens_key_r], [za],
+                                    sens.get(resp=[resp], mat=[mat],
+                                             MT=[sens_key_r], za=[za],
                                              group_order="ascending"))
                             else:
                                 S_r = np.zeros((sens.n_groups, ))
 
                             if exist2:
                                 S_l = np.squeeze(
-                                    sens2.get([resp], [mat2], [sens2_key_l],
-                                              [za],
+                                    sens2.get(resp=[resp], mat=[mat2],
+                                              MT=[sens2_key_l], za=[za],
                                               group_order="ascending"))
                             else:
                                 S_l = np.zeros((sens.n_groups, ))
@@ -1784,7 +1861,8 @@ class Sandwich:
                         if cov_df is not None:
                             if exist and exist2:
                                 _merge_or_set(output[resp][za], nm,
-                                              np.dot(S_r.T, np.dot(C, S_l)), mf,
+                                              np.dot(S_r.T, np.dot(C, S_l)),
+                                              mf,
                                               sum_MFs=sum_MFs)
                             else:
                                 _merge_or_set(output[resp][za], nm, 0, mf,
@@ -1806,7 +1884,8 @@ class Sandwich:
                                         corr=missing_cov_corr)
                                     _merge_or_set(output[resp][za], nm,
                                                   np.dot(S_r.T,
-                                                         np.dot(C_fb, S_l)), mf,
+                                                         np.dot(C_fb, S_l)),
+                                                  mf,
                                                   sum_MFs=sum_MFs)
                                 else:
                                     _merge_or_set(output[resp][za], nm, 0, mf,
