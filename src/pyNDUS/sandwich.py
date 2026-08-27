@@ -7,7 +7,6 @@ description: propagate sensitivity profiles and covariance matrices with
              sandwich formulas.
 """
 import numpy as np
-from numpy import trapz
 import pandas as pd
 from uncertainties import ufloat
 from uncertainties import unumpy as unp
