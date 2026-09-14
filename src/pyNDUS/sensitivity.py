@@ -13,10 +13,10 @@ from collections import OrderedDict
 from collections.abc import Iterable
 try:
     from ._sensitivity_algebra import SensitivityAlgebraMixin
-    from .channels import SensitivityChannel
+    from .channels import ERANOS_CHANNELS, SensitivityChannel
 except ImportError:  # when run as a script
     from _sensitivity_algebra import SensitivityAlgebraMixin
-    from channels import SensitivityChannel
+    from channels import ERANOS_CHANNELS, SensitivityChannel
 try:
     import pyNDUS.utils as utils
 except ModuleNotFoundError:  # when run as a script
@@ -232,7 +232,7 @@ class Sensitivity(SensitivityAlgebraMixin):
         zais = []
         zaisapp = zais.append
         perturbations = []
-        perturbationsapp = perturbations.append
+        perturbation_channels = []
 
         header_pat = "SENSITIVITY COEFFICIENTS"
         param_pat = re.compile(r'\b(\w+)\s+SENSITIVITY\b')
@@ -240,22 +240,8 @@ class Sensitivity(SensitivityAlgebraMixin):
         iso_pat = re.compile(r'\bISOTOPE\s+(\w+)')
         data_pat = re.compile(r'\bGROUP\s+(\w+)')
 
-        str2MT = OrderedDict({
-            "CAPTURE": 102,
-            "FISSION": 18,
-            "ELASTIC": 2,
-            "INELASTIC": 4,
-            "N,XN": 106,
-            "NU": 452
-        })
-        MT_str = list(str2MT.keys())
-        MT_int = OrderedDict(
-            zip(str2MT.values(), [i for i in range(len(MT_str))]))
-        # idx_MT_sorted = [2, 3, 1, 0, 4, 5]
-        MT_sorted = tuple(sorted(MT_int.keys()))
+        eranos_channels = list(ERANOS_CHANNELS.values())
         idx_MT_sorted = []
-        for mt in MT_sorted:
-            idx_MT_sorted.append(MT_int[mt])
 
         # hard-coded, sanity check on order is reported later
         with open(self.filepath, 'r', encoding='utf-8') as f:
@@ -314,17 +300,28 @@ class Sensitivity(SensitivityAlgebraMixin):
                         perturbations = line.split()
                         perturbations.remove('GROUP')
                         perturbations.remove('SUM')
+                        unknown = [
+                            label for label in perturbations
+                            if label not in ERANOS_CHANNELS
+                        ]
+                        if unknown:
+                            raise SensitivityError(
+                                "Unknown ERANOS perturbation column(s): "
+                                f"{unknown}. The structure of the ERANOS "
+                                "output file might have changed!")
+                        perturbation_channels = [
+                            ERANOS_CHANNELS[label] for label in perturbations
+                        ]
+                        idx_MT_sorted = sorted(
+                            range(len(perturbation_channels)),
+                            key=lambda index: perturbation_channels[
+                                index].average_MT)
 
                     if columns is None:
                         num_column = len(
                             perturbations
                         )  # len(perturbations) + 2 - (1 if data_line else 0)
                         columns = -np.ones((num_column, nE))
-                        if perturbations != MT_str:
-                            raise SensitivityError(
-                                "The MT order does not match."
-                                "The structure of the ERANOS output file might have changed!"
-                            )
                     iline_data = iline + 1
                     ig = 0
 
@@ -356,12 +353,13 @@ class Sensitivity(SensitivityAlgebraMixin):
                 "The structure of the ERANOS output file might have changed!")
 
         # --- get materials, isotopes and reactions
-        perturbations = [2, 4, 18, 102, 106, 452]
+        perturbations = sorted(perturbation_channels or eranos_channels,
+                               key=lambda channel: channel.average_MT)
         try:
             self.materials = list(materials)
             self.zaid = [utils.zais2zaid(za) for za in zais]
             self.zais = self.zaid.keys()
-            self.MTs = perturbations
+            self.channels = perturbations
         except ValueError:
             raise SensitivityError(
                 "The structure of the ERANOS output file might have changed!")
@@ -776,14 +774,12 @@ class Sensitivity(SensitivityAlgebraMixin):
             mt = int(value)
             if mt in SERPENT_NUMERIC_ALIASES:
                 return SensitivityChannel.from_alias(SERPENT_NUMERIC_ALIASES[mt])
-            return SensitivityChannel.from_endf(
-                average_MF=3, average_MT=mt, name=f"xs {mt}")
+            return SensitivityChannel.from_endf(average_MF=3, average_MT=mt)
         if isinstance(value, str):
             label = " ".join(value.split()).lower()
             if "xs" in label:
                 mt = 1 if "total" in label else int(label.split()[1])
-                return SensitivityChannel.from_endf(
-                    average_MF=3, average_MT=mt, name=label)
+                return SensitivityChannel.from_endf(average_MF=3, average_MT=mt)
             try:
                 return SensitivityChannel.from_alias(label)
             except ValueError:
@@ -824,8 +820,7 @@ class Sensitivity(SensitivityAlgebraMixin):
             if mt == 452:
                 channel = SensitivityChannel.from_alias("nubar total")
             else:
-                channel = SensitivityChannel.from_endf(
-                    average_MF=3, average_MT=mt, name=f"xs {mt}")
+                channel = SensitivityChannel.from_endf(average_MF=3, average_MT=mt)
             channels[channel] = imt
         self._channels = channels
 
@@ -1363,10 +1358,12 @@ class Sensitivity(SensitivityAlgebraMixin):
                 selected_from_mt.extend(matches)
             selected = selected_from_mt
 
-        filters = {"average_MF": average_MF,
-                   "covariance_MF": covariance_MF,
-                   "covariance_MT": covariance_MT,
-                   "L": L}
+        filters = {
+            "average_MF": average_MF,
+            "covariance_MF": covariance_MF,
+            "covariance_MT": covariance_MT,
+            "L": L
+        }
         for attr, value in filters.items():
             if value is None:
                 continue
@@ -1382,7 +1379,8 @@ class Sensitivity(SensitivityAlgebraMixin):
                 ]
 
         if not selected:
-            raise ValueError("No sensitivity channels match the requested filters.")
+            raise ValueError(
+                "No sensitivity channels match the requested filters.")
         return selected
 
     def get(self, resp=None, mat=None, MT=None, channel=None, average_MF=None,
@@ -1839,8 +1837,7 @@ class Sensitivity(SensitivityAlgebraMixin):
         has_rsd = all(rsd_availability)
 
         merged_avg = np.zeros((nResp, nMat, nZaid, nMTs, nE))
-        merged_rsd = (np.zeros(
-            (nResp, nMat, nZaid, nMTs, nE)) if has_rsd else None)
+        merged_rsd = np.zeros((nResp, nMat, nZaid, nMTs, nE)) if has_rsd else None
 
         filled = {}
 
@@ -1850,13 +1847,8 @@ class Sensitivity(SensitivityAlgebraMixin):
                     for za in obj.zaid:
                         for mt in obj.MTs:
                             try:
-                                out = obj.get(
-                                    resp=[resp],
-                                    mat=[mat],
-                                    MT=[mt],
-                                    za=[za],
-                                    group_order="ascending",
-                                )
+                                out = obj.get(resp=[resp], mat=[mat], MT=[mt],
+                                              za=[za], group_order="ascending")
                             except (KeyError, ValueError) as exc:
                                 raise SensitivityError(
                                     "Could not retrieve sensitivity profile "

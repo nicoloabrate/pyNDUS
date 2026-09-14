@@ -37,8 +37,8 @@ class SensitivityChannel:
         if label in _ALIASES:
             return _ALIASES[label]
         if label.startswith("xs "):
-            mt = int(label.split()[1])
-            return cls.from_endf(average_MF=3, average_MT=mt, name=label)
+            mt = 1 if "total" in label else int(label.split()[1])
+            return cls.from_endf(average_MF=3, average_MT=mt)
         raise ValueError(f"Unknown sensitivity channel alias {alias!r}.")
 
     @classmethod
@@ -120,14 +120,46 @@ CHI_DELAYED = SensitivityChannel(5, 455, 35, 455, name="chi delayed")
 ELASTIC_LEGENDRE_P1 = SensitivityChannel(4, 2, 34, 251, L=1, name="elastic Legendre moment 1", 
                                          covariance_MT_aliases=(2, ))
 ELASTIC_LEGENDRE_P2 = SensitivityChannel(4, 2, 34, 2, L=2, name="elastic Legendre moment 2")
+ELASTIC_XS = SensitivityChannel(3, 2, 33, 2, name="elastic")
+INELASTIC_XS = SensitivityChannel(3, 4, 33, 4, name="inelastic")
+FISSION_XS = SensitivityChannel(3, 18, 33, 18, name="fission")
+CAPTURE_XS = SensitivityChannel(3, 102, 33, 102, name="capture")
+N_XN_XS = SensitivityChannel(3, 16, 33, 16, name="n,xn")
 
 _ALIASES = {
             "nubar total": NUBAR_TOTAL,
             "nubar prompt": NUBAR_PROMPT,
             "nubar delayed": NUBAR_DELAYED,
+            "prompt nu": NUBAR_PROMPT,
+            "delayed nu": NUBAR_DELAYED,
             "chi total": CHI_TOTAL,
             "chi prompt": CHI_PROMPT,
             "chi delayed": CHI_DELAYED,
+            "prompt chi": CHI_PROMPT,
+            "delayed chi": CHI_DELAYED,
             "ela leg mom 1": ELASTIC_LEGENDRE_P1,
             "ela leg mom 2": ELASTIC_LEGENDRE_P2,
+            "elastic law": ELASTIC_LEGENDRE_P1,
+            "scattering law": ELASTIC_LEGENDRE_P1,
+            "elastic": ELASTIC_XS,
+            "xs 2": ELASTIC_XS,
+            "inelastic": INELASTIC_XS,
+            "xs 4": INELASTIC_XS,
+            "fission": FISSION_XS,
+            "xs 18": FISSION_XS,
+            "n,xn": N_XN_XS,
+            "nxn": N_XN_XS,
+            "xs 16": N_XN_XS,
+            "capture": CAPTURE_XS,
+            "n,gamma": CAPTURE_XS,
+            "xs 102": CAPTURE_XS,
             }
+
+ERANOS_CHANNELS = {
+                   "CAPTURE": CAPTURE_XS,
+                   "FISSION": FISSION_XS,
+                   "ELASTIC": ELASTIC_XS,
+                   "INELASTIC": INELASTIC_XS,
+                   "N,XN": N_XN_XS,
+                   "NU": NUBAR_TOTAL,
+                   }
