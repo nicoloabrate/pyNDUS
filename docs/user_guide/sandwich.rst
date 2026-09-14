@@ -74,7 +74,7 @@ covariances to sensitivities by covariance ``(MF, MT)`` channel rather than by
 MT alone. This avoids ambiguous cases where the same MT value appears in
 different ENDF files. For example:
 
-* MF=33, MT=18 is matched to the fission cross-section sensitivity ``xs 18``.
+* MF=33, MT=18 is matched to the fission sensitivity ``fission``.
 * MF=35, MT=18 is matched to ``chi prompt``.
 * MF=31, MT=452/455/456 is matched to the corresponding nubar sensitivity.
 * MF=34, MT=251 is matched to ``ela leg mom 1``.

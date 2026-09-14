@@ -17,6 +17,10 @@ The object stores responses, materials, nuclides, sensitivity channels, group
 boundaries, mean sensitivity profiles, and—when available—the relative standard
 deviations reported by the source calculation.
 
+ERANOS perturbation columns are normalized through the same channel registry.
+The supported labels are ``CAPTURE``, ``FISSION``, ``ELASTIC``,
+``INELASTIC``, ``N,XN``, and ``NU``; ``N,XN`` is mapped to MT=16.
+
 Serpent perturbations and ENDF channels
 ---------------------------------------
 
@@ -53,9 +57,9 @@ in more than one MF, pyNDUS raises an explicit ambiguity error.
    avg, rsd = sens.get(channel=fission_xs)
 
 ``SensitivityChannel.from_alias("chi prompt")`` is intended for reader labels
-such as Serpent perturbation names, MCNP labels, or DRAGON labels. Known aliases
-are normalized to their ENDF-aware channel, so ``"scattering law"`` (MCNP) and
-``"ela leg mom 1"`` (Serpent) both identify the first elastic Legendre moment.
+such as Serpent perturbation names or other code-specific labels. Known aliases
+are normalized to their ENDF-aware channel, so ``"ela leg mom 1"`` identifies
+the first elastic Legendre moment.
 
 ``SensitivityChannel.from_endf(...)`` is intended for code that already knows
 the ENDF identifiers. It accepts either average-side identifiers, such as

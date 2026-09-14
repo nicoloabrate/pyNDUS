@@ -136,7 +136,7 @@ that stores the mean quantity:
 
 This distinction is especially important for Serpent perturbations that are
 identified by names rather than by a unique ENDF MT. ``chi prompt`` is matched
-to MF=35, MT=18, while ``xs 18`` is matched to MF=33, MT=18.
+to MF=35, MT=18, while ``fission`` is matched to MF=33, MT=18.
 
 MF34 and the reduced MT251 angular covariance
 ---------------------------------------------
