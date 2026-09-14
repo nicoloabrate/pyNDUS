@@ -225,6 +225,13 @@ def _default_material_for_integral_comparison(sens):
         return 'total'
     if sens.reader == 'eranos':
         return 'REACTOR'
+    if sens.reader == 'mcnp':
+        if 'profile' in sens.materials:
+            return 'profile'
+        if 'profile 1' in sens.materials:
+            return 'profile 1'
+        if len(sens.materials) == 1:
+            return next(iter(sens.materials))
     raise SandwichError(
         "Cannot infer a default material for integral comparison from "
         f"{sens.reader!r} sensitivity data. Pass an object with a whole-system "
@@ -426,7 +433,8 @@ class Sandwich:
         Isotopes to process, either as ZAID integers or isotope labels.
     list_MTs : int or list[int], optional
         MT reactions to process. If ``None``, use the intersection available in
-        sensitivities and covariances.
+        sensitivities and covariances, excluding ENDF ``MT=1`` (the total
+        cross section) by default. Request ``MT=1`` explicitly to include it.
     list_MFs : int, str, list, or None, optional
         MF sections to process. The default uses the historical MF31/MF33
         selection when covariances are available.
@@ -794,6 +802,11 @@ class Sandwich:
                 for mf, cov_mts in map_MF2MT[za].items():
                     selected = []
                     for mt in cov_mts:
+                        # MT=1 is the total cross section and is not an
+                        # independent default contribution. Include it only
+                        # when the user explicitly requests it.
+                        if get_MTs and mt == 1:
+                            continue
                         requested = _covariance_mt_requested_by_user(
                             sens, mf, mt, requested_MTs)
                         if not requested and sens2 is not None:
@@ -830,6 +843,11 @@ class Sandwich:
                     map_MF2MT[za] = _map_mf2mt_from_sensitivity_channels(
                         sens, sens2, selected_MFs=selected_MFs,
                         requested_MTs=requested_MTs)
+                    if get_MTs:
+                        map_MF2MT[za] = {
+                            mf: [mt for mt in mts if mt != 1]
+                            for mf, mts in map_MF2MT[za].items()
+                        }
                     self.MTs[za] = sorted(
                         {mt
                          for mts in map_MF2MT[za].values()

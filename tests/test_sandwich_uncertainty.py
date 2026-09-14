@@ -433,6 +433,59 @@ def test_invalid_covariance_mt_reports_parsing_problem(monkeypatch):
         )
 
 
+def test_default_mt_selection_excludes_total_cross_section(monkeypatch):
+    """Exclude MT=1 by default but retain it when explicitly selected."""
+    monkeypatch.setattr(sandwich_module, "Sensitivity", FakeSensitivityForInit)
+    monkeypatch.setattr(sandwich_module, "Covariance", FakeCovZAForInit)
+
+    za = 922350
+    sens = FakeSensitivityForInit(
+        {
+            ("keff", "fuel", za, 1): np.array([2.0, 0.0]),
+            ("keff", "fuel", za, 18): np.array([1.0, 0.0]),
+        },
+    )
+    covmat = {
+        za: FakeCovZAForInit({
+            "errorr33": {
+                (1, 1): np.diag([100.0, 0.0]),
+                (18, 18): np.diag([4.0, 0.0]),
+            }
+        })
+    }
+
+    default = Sandwich(
+        sens=sens,
+        covmat=covmat,
+        list_resp=["keff"],
+        list_mat=["fuel"],
+        list_za=[za],
+        list_MFs=[33],
+    )
+    assert default.MFs2MTs == {za: {"errorr33": [18]}}
+    npt.assert_allclose(
+        default.uncertainty_standard_deviation.loc[("keff", "fuel"),
+                                                    "variance"],
+        4.0,
+    )
+
+    explicit = Sandwich(
+        sens=sens,
+        covmat=covmat,
+        list_resp=["keff"],
+        list_mat=["fuel"],
+        list_za=[za],
+        list_MTs=[1],
+        list_MFs=[33],
+    )
+    assert explicit.MFs2MTs == {za: {"errorr33": [1]}}
+    npt.assert_allclose(
+        explicit.uncertainty_standard_deviation.loc[("keff", "fuel"),
+                                                     "variance"],
+        400.0,
+    )
+
+
 def test_uncertainty_mc_offdiagonal_passes_za_as_keyword(monkeypatch):
     """Use keyword arguments when reading off-diagonal MC sensitivities."""
     monkeypatch.setattr(sandwich_module, "Covariance", FakeCovZAForInit)

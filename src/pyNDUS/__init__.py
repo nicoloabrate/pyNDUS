@@ -5,7 +5,8 @@ from .sandwich import Sandwich, SandwichError
 __all__ = [
             "Covariance", "CovarianceError", "Sensitivity", "SensitivityError",
             "SensitivityAlgebraError", "SensitivityChannel", "Sandwich",
-            "SandwichError",
+            "SandwichError", "SensitivitySpatialZone",
+            "SensitivityNuclideInstance",
             ]
 
 
@@ -26,6 +27,14 @@ def __getattr__(name):
     if name == "SensitivityError":
         from .sensitivity import SensitivityError
         return SensitivityError
+
+    if name == "SensitivitySpatialZone":
+        from .sensitivity import SensitivitySpatialZone
+        return SensitivitySpatialZone
+
+    if name == "SensitivityNuclideInstance":
+        from .sensitivity import SensitivityNuclideInstance
+        return SensitivityNuclideInstance
 
     if name == "SensitivityAlgebraError":
         from ._sensitivity_algebra import SensitivityAlgebraError
