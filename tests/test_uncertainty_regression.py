@@ -1,6 +1,7 @@
 """Regression test based on the example1 notebook benchmark."""
 
 from pathlib import Path
+import sys
 
 import numpy as np
 import pytest
@@ -40,9 +41,19 @@ def test_example1_notebook_uncertainty_regression():
     """
     Preserve the example1 uncertainty values validated outside pyNDUS.
     """
+    sys.modules.pop("sandy", None)
+    sys.modules.pop("pyNDUS.covariance", None)
+    sys.modules.pop("pyNDUS.sandwich", None)
+    parent = sys.modules.get("pyNDUS")
+    if parent is not None and hasattr(parent, "covariance"):
+        delattr(parent, "covariance")
+    if parent is not None and hasattr(parent, "sandwich"):
+        delattr(parent, "sandwich")
     pytest.importorskip("sandy")
     pytest.importorskip("serpentTools")
-    from pyNDUS import Covariance, Sandwich, Sensitivity
+    from pyNDUS import Sensitivity
+    from pyNDUS.covariance import Covariance
+    from pyNDUS.sandwich import Sandwich
 
     sens = Sensitivity(DATA / "example_sens0.m")
     covar_zais = {

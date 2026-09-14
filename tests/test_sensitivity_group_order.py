@@ -4,6 +4,7 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
+from pyNDUS.channels import SensitivityChannel
 from pyNDUS.sensitivity import Sensitivity
 
 
@@ -70,14 +71,73 @@ def test_eranos_profiles_are_reordered_to_ascending_energy_order():
     npt.assert_allclose(sens.sens.reshape(-1), [1.0, 2.0, 3.0])
 
 
+def test_eranos_mts_use_registered_channels_and_nxn_mt16():
+    """Map ERANOS perturbation columns through the central channel registry."""
+    sens = Sensitivity.__new__(Sensitivity)
+    sens.reader = "eranos"
+    sens.MTs = [2, 4, 16, 18, 102, 452]
+
+    assert SensitivityChannel.from_alias("n,xn") in sens.channels
+    assert SensitivityChannel.from_alias("n,xn").average_MT == 16
+    assert SensitivityChannel.from_alias("fission").name == "fission"
+    assert [channel.average_MT
+            for channel in sens.channels] == [2, 4, 16, 18, 102, 452]
+
+
+def test_eranos_reader_maps_columns_by_header_label(tmp_path):
+    """Accept ERANOS files where NU and N,XN are printed in file order."""
+    rows = "\n".join(f"{group:8d} {group:12.6E} {10 * group:12.6E} "
+                     f"{20 * group:12.6E} {30 * group:12.6E} "
+                     f"{40 * group:12.6E} {50 * group:12.6E} "
+                     f"{151 * group:12.6E}" for group in range(1, 34))
+    path = tmp_path / "case.eranos33"
+    path.write_text(
+        "\n"
+        "                              *  SENSITIVITY COEFFICIENTS  *\n"
+        "             ****   KEFF  SENSITIVITY  ****\n"
+        "\n"
+        " REACTOR\n"
+        "\n"
+        "          ISOTOPE U235\n"
+        "\n"
+        "    GROUP   CAPTURE       FISSION       ELASTIC       INELASTIC     "
+        "NU            N,XN                   SUM\n"
+        f"{rows}\n",
+        encoding="utf-8",
+    )
+
+    sens = Sensitivity(path)
+
+    assert [channel.average_MT
+            for channel in sens.channels] == [2, 4, 16, 18, 102, 452]
+    npt.assert_allclose(
+        sens.get(resp="keff",
+                 mat="REACTOR",
+                 za=922350,
+                 MT=452,
+                 group_order="descending").reshape(-1),
+        [40 * group for group in range(1, 34)])
+    npt.assert_allclose(
+        sens.get(resp="keff",
+                 mat="REACTOR",
+                 za=922350,
+                 MT=16,
+                 group_order="descending").reshape(-1),
+        [50 * group for group in range(1, 34)])
+
+
 def test_get_returns_ascending_order_by_default_and_descending_on_request():
     """Expose ascending profiles by default while keeping a descending view."""
     sens = _make_serpent_sensitivity(avg=[1.0, 2.0, 3.0], rsd=[0.1, 0.2, 0.3])
 
     avg, rsd = sens.get(resp=["keff"], mat=["fuel"], za=[922350], MT=[18])
-    avg_desc, rsd_desc = sens.get(resp=["keff"], mat=["fuel"], za=[922350], MT=[18],
-                                  group_order="descending",
-                                  )
+    avg_desc, rsd_desc = sens.get(
+        resp=["keff"],
+        mat=["fuel"],
+        za=[922350],
+        MT=[18],
+        group_order="descending",
+    )
 
     npt.assert_allclose(avg.reshape(-1), [1.0, 2.0, 3.0])
     npt.assert_allclose(rsd.reshape(-1), [0.1, 0.2, 0.3])
@@ -89,13 +149,27 @@ def test_get_group_numbers_follow_requested_order():
     """Interpret group numbers in the same order requested for the output."""
     sens = _make_serpent_sensitivity(avg=[1.0, 2.0, 3.0], rsd=[0.1, 0.2, 0.3])
 
-    avg_first_asc, _ = sens.get(resp=["keff"], mat=["fuel"], za=[922350], MT=[18], g=1)
-    avg_first_desc, _ = sens.get(resp=["keff"], mat=["fuel"], za=[922350], MT=[18], g=1,
-                                 group_order="descending",
-                                 )
-    avg_list_desc, _ = sens.get(resp=["keff"], mat=["fuel"], za=[922350], MT=[18], g=[1, 3],
-                                group_order="descending",
-                                )
+    avg_first_asc, _ = sens.get(resp=["keff"],
+                                mat=["fuel"],
+                                za=[922350],
+                                MT=[18],
+                                g=1)
+    avg_first_desc, _ = sens.get(
+        resp=["keff"],
+        mat=["fuel"],
+        za=[922350],
+        MT=[18],
+        g=1,
+        group_order="descending",
+    )
+    avg_list_desc, _ = sens.get(
+        resp=["keff"],
+        mat=["fuel"],
+        za=[922350],
+        MT=[18],
+        g=[1, 3],
+        group_order="descending",
+    )
 
     npt.assert_allclose(avg_first_asc.reshape(-1), [1.0])
     npt.assert_allclose(avg_first_desc.reshape(-1), [3.0])
@@ -107,14 +181,19 @@ def test_get_rejects_unknown_group_order():
     sens = _make_serpent_sensitivity(avg=[1.0, 2.0, 3.0])
 
     with pytest.raises(ValueError, match="group_order"):
-        sens.get(resp=["keff"], mat=["fuel"], za=[922350], MT=[18], group_order="upwards")
+        sens.get(resp=["keff"],
+                 mat=["fuel"],
+                 za=[922350],
+                 MT=[18],
+                 group_order="upwards")
 
 
 def test_group_structure_is_normalized_to_ascending_order():
     """Store descending boundary vectors in ascending order."""
-    sens = _make_serpent_sensitivity(avg=[1.0, 2.0, 3.0],
-                                     group_structure=[4.0, 3.0, 2.0, 1.0],
-                                     )
+    sens = _make_serpent_sensitivity(
+        avg=[1.0, 2.0, 3.0],
+        group_structure=[4.0, 3.0, 2.0, 1.0],
+    )
 
     npt.assert_allclose(sens.group_structure, [1.0, 2.0, 3.0, 4.0])
 
@@ -124,8 +203,10 @@ def test_normalize_sens_profile_accepts_ascending_and_descending_grids():
     ascending = [1.0, np.e, np.e**2]
     descending = ascending[::-1]
 
-    npt.assert_allclose(Sensitivity.NormalizeSensProfile([2.0, 4.0], ascending), [2.0, 4.0])
-    npt.assert_allclose(Sensitivity.NormalizeSensProfile([2.0, 4.0], descending), [2.0, 4.0])
+    npt.assert_allclose(
+        Sensitivity.NormalizeSensProfile([2.0, 4.0], ascending), [2.0, 4.0])
+    npt.assert_allclose(
+        Sensitivity.NormalizeSensProfile([2.0, 4.0], descending), [2.0, 4.0])
 
 
 def test_normalize_sens_profile_rejects_inconsistent_grid():

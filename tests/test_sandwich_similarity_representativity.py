@@ -58,6 +58,29 @@ class FakeSensitivity:
         return self._data[(resp, mat, za, mt)]
 
 
+class FakeMCSensitivity(FakeSensitivity):
+    """Fake sensitivity returning average and relative-standard-deviation arrays."""
+
+    def __init__(self, data, rsd, n_groups=2, reader="serpent"):
+        super().__init__(data, n_groups=n_groups, reader=reader)
+        self._rsd = rsd
+        self.sens_rsd = True
+
+    def get(self, *args, **kwargs):
+        if args and len(args) >= 4:
+            resp = args[0][0]
+            mat = args[1][0]
+            mt = args[2][0]
+            za = args[3][0]
+        else:
+            resp = kwargs["resp"][0]
+            mat = kwargs["mat"][0]
+            mt = kwargs["MT"][0]
+            za = kwargs["za"][0]
+        key = (resp, mat, za, mt)
+        return self._data[key], self._rsd[key]
+
+
 class FakeCovZA:
     """
     Minimal covariance object for compute_representativity:
@@ -113,6 +136,73 @@ def test_similarity_one_single_mt():
     npt.assert_allclose(got, 1.0, rtol=1e-14, atol=0.0)
 
 
+def test_representativity_uses_each_readers_default_material():
+    """Compare Serpent total against ERANOS REACTOR instead of reusing one label."""
+    za = 922350
+    za_dict = {za: "U235"}
+    list_resp = ["keff"]
+    list_MTs = {za: {"errorr33": [18]}}
+    covmat = {za: FakeCovZA({"errorr33": {(18, 18): np.eye(2)}})}
+    sens = FakeSensitivity({("keff", "total", za, 18): np.array([1.0, 0.0])},
+                           n_groups=2,
+                           reader="serpent")
+    sens2 = FakeSensitivity(
+        {("keff", "REACTOR", za, 18): np.array([1.0, 0.0])},
+        n_groups=2,
+        reader="eranos",
+    )
+
+    rep_df, _ = Sandwich.compute_representativity(
+        sens=sens,
+        sens2=sens2,
+        covmat=covmat,
+        list_resp=list_resp,
+        map_MF2MT=list_MTs,
+        za_dict=za_dict,
+        sens_MC=False,
+        sigma=1,
+    )
+
+    got = _get_df_value(rep_df, "keff", "U235", 18, 18)
+    npt.assert_allclose(got, 1.0, rtol=1e-14, atol=0.0)
+
+
+def test_representativity_accepts_mixed_mc_and_deterministic_inputs():
+    """Do not unpack deterministic profiles when the other side has RSD data."""
+    za = 922350
+    za_dict = {za: "U235"}
+    list_resp = ["keff"]
+    list_MTs = {za: {"errorr33": [18]}}
+    key_mc = ("keff", "total", za, 18)
+    key_det = ("keff", "REACTOR", za, 18)
+    covmat = {za: FakeCovZA({"errorr33": {(18, 18): np.eye(2)}})}
+    sens = FakeMCSensitivity(
+        {key_mc: np.array([1.0, 0.0])},
+        {key_mc: np.array([0.01, 0.01])},
+        n_groups=2,
+        reader="serpent",
+    )
+    sens2 = FakeSensitivity(
+        {key_det: np.array([1.0, 0.0])},
+        n_groups=2,
+        reader="eranos",
+    )
+
+    rep_df, _ = Sandwich.compute_representativity(
+        sens=sens,
+        sens2=sens2,
+        covmat=covmat,
+        list_resp=list_resp,
+        map_MF2MT=list_MTs,
+        za_dict=za_dict,
+        sens_MC=True,
+        sigma=1,
+    )
+
+    got = _get_df_value(rep_df, "keff", "U235", 18, 18)
+    npt.assert_allclose(got.nominal_value, 1.0, rtol=1e-14, atol=0.0)
+
+
 def test_similarity_multi_mt_uses_pairwise_norms():
     """Normalize every MT pair with the two vectors in its numerator."""
     za = 942390
@@ -141,18 +231,12 @@ def test_similarity_multi_mt_uses_pairwise_norms():
         sigma=1,
     )
 
-    got = np.array(
-        [
-            [
-                _get_df_value(sim_df, "keff", "Pu239", mt_row, mt_col)
-                for mt_col in (18, 102)
-            ]
-            for mt_row in (18, 102)
-        ]
-    )
-    expected_cross = S18.dot(S102) / (
-        np.linalg.norm(S18) * np.linalg.norm(S102)
-    )
+    got = np.array([[
+        _get_df_value(sim_df, "keff", "Pu239", mt_row, mt_col)
+        for mt_col in (18, 102)
+    ] for mt_row in (18, 102)])
+    expected_cross = S18.dot(S102) / (np.linalg.norm(S18) *
+                                      np.linalg.norm(S102))
 
     npt.assert_allclose(np.diag(got), np.ones(2), rtol=1e-14, atol=0.0)
     npt.assert_allclose(got[0, 1], expected_cross, rtol=1e-14, atol=0.0)
@@ -278,10 +362,7 @@ def test_total_representativity_uses_full_system_uncertainties():
     list_resp = ["keff"]
     mf = "errorr33"
     mt = 18
-    map_MF2MT = {
-        za: {mf: [mt]}
-        for za in (common, only_a, only_b)
-    }
+    map_MF2MT = {za: {mf: [mt]} for za in (common, only_a, only_b)}
 
     sens_a = FakeSensitivity(
         {
@@ -301,7 +382,9 @@ def test_total_representativity_uses_full_system_uncertainties():
     )
     covariance = np.eye(2)
     covmat = {
-        za: FakeCovZA({mf: {(mt, mt): covariance}})
+        za: FakeCovZA({mf: {
+            (mt, mt): covariance
+        }})
         for za in (common, only_a, only_b)
     }
 

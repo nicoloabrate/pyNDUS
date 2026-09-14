@@ -9,6 +9,16 @@ import pandas as pd
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _cleanup_fake_covariance_module():
+    """Remove covariance modules imported with fake sandy after each test."""
+    yield
+    sys.modules.pop("pyNDUS.covariance", None)
+    parent = sys.modules.get("pyNDUS")
+    if parent is not None and hasattr(parent, "covariance"):
+        delattr(parent, "covariance")
+
+
 class DummyErrorr:
     """Minimal ERRORR object exposing covariance metadata."""
 

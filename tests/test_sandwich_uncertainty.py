@@ -3,6 +3,7 @@
 import pytest
 import numpy as np
 import numpy.testing as npt
+from uncertainties import unumpy as unp
 
 import pyNDUS.sandwich as sandwich_module
 from pyNDUS.sandwich import Sandwich
@@ -49,6 +50,31 @@ class FakeSensitivity:
             za = kwargs["za"][0]
 
         return self._data[(resp, mat, za, mt)]
+
+
+class FakeMCSensitivity(FakeSensitivity):
+    """Fake sensitivity object returning average coefficients and RSDs."""
+
+    def __init__(self, data, rsd, n_groups=2, reader="serpent"):
+        """Store sparse sensitivity vectors and matching relative deviations."""
+        super().__init__(data, n_groups=n_groups, reader=reader)
+        self._rsd = rsd
+        self.sens_rsd = True
+
+    def get(self, *args, **kwargs):
+        """Return the sensitivity vector and its relative standard deviation."""
+        if args and len(args) >= 4:
+            resp = args[0][0]
+            mat = args[1][0]
+            mt = args[2][0]
+            za = args[3][0]
+        else:
+            resp = kwargs["resp"][0]
+            mat = kwargs["mat"][0]
+            mt = kwargs["MT"][0]
+            za = kwargs["za"][0]
+        key = (resp, mat, za, mt)
+        return self._data[key], self._rsd[key]
 
 
 class FakeCovZA:
@@ -166,6 +192,41 @@ def test_uncertainty_single_mt_diagonal():
     got = _get_df_value(df_matrix, "keff", "fuel", za_label, mt, mt)
 
     npt.assert_allclose(got, expected, rtol=1e-14, atol=0.0)
+
+
+def test_uncertainty_treats_sensitivity_rsd_as_relative():
+    """Convert sensitivity RSDs to absolute uncertainties before sandwiching."""
+    za = 922350
+    za_label = "U235"
+    mt = 18
+    mf = "errorr33"
+    values = np.array([0.1, 0.2])
+    rsd = np.array([0.5, 0.25])
+    C = np.eye(2)
+
+    sens = FakeMCSensitivity({("keff", "fuel", za, mt): values},
+                             {("keff", "fuel", za, mt): rsd},
+                             n_groups=2)
+    covmat = {za: FakeCovZA({mf: {(mt, mt): C}})}
+
+    df_matrix, _ = Sandwich.compute_uncertainty(
+        sens=sens,
+        covmat=covmat,
+        list_resp=["keff"],
+        list_mat=["fuel"],
+        map_MF2MT={za: {
+            mf: [mt]
+        }},
+        za_dict={za: za_label},
+        sens_MC=True,
+        sigma=1,
+    )
+
+    got = _get_df_value(df_matrix, "keff", "fuel", za_label, mt, mt)
+    expected_nominal = float(values.T @ C @ values)
+    expected_std = np.sqrt(np.sum((2 * values * np.abs(values) * rsd)**2))
+    npt.assert_allclose(float(unp.nominal_values(got)), expected_nominal)
+    npt.assert_allclose(float(unp.std_devs(got)), expected_std)
 
 
 def test_uncertainty_uses_mf35_when_selected():
@@ -509,6 +570,15 @@ def test_elastic_legendre_p1_accepts_mf34_mt251_and_mf34_mt2_with_l():
 
     with pytest.raises(ValueError, match="multiple sensitivity channels"):
         SensitivityChannel.from_endf(covariance_MF=34, covariance_MT=2)
+
+
+def test_cross_section_aliases_resolve_to_descriptive_channel_names():
+    """Legacy xs aliases are accepted but not used as canonical names."""
+    fission = SensitivityChannel.from_alias("fission")
+
+    assert SensitivityChannel.from_alias("xs 18") == fission
+    assert SensitivityChannel.from_endf(average_MF=3, average_MT=18) == fission
+    assert fission.name == "fission"
 
 
 def test_from_endf_requires_mf_mt_pair_to_resolve_registered_channel():
