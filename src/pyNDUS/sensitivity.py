@@ -11,6 +11,7 @@ import serpentTools as st
 from pathlib import Path
 from collections import OrderedDict
 from collections.abc import Iterable
+from dataclasses import dataclass
 try:
     from ._sensitivity_algebra import SensitivityAlgebraMixin
     from .channels import ERANOS_CHANNELS, SensitivityChannel
@@ -32,6 +33,46 @@ SERPENT_NUMERIC_ALIASES = {
 }
 
 
+@dataclass(frozen=True)
+class SensitivitySpatialZone:
+    """Description of one spatial zone on the sensitivity material axis."""
+    profile: int = None
+    zone: int = None
+    kind: str = "profile"
+    entries: tuple = ()
+
+    @property
+    def label(self):
+        """Return the label used on the existing pyNDUS material axis."""
+        if self.kind == "profile":
+            if self.profile is None:
+                return "profile"
+            return f"profile {self.profile}"
+
+        noun = "cell" if self.kind == "cell" else "material"
+        if len(self.entries) != 1:
+            noun += "s"
+        entries = ", ".join(str(entry) for entry in self.entries) or "unknown"
+        return f"profile {self.profile} zone {self.zone} {noun} {entries}"
+
+
+@dataclass(frozen=True)
+class SensitivityNuclideInstance:
+    """Description of one nuclide library instance on the sensitivity ZA axis."""
+    zaid: int
+    ace_suffix: str = None
+    temperature: object = None
+
+    @property
+    def label(self):
+        """Return a compact label for the nuclide library instance."""
+        if self.ace_suffix is None:
+            return str(self.zaid)
+        if self.temperature is None:
+            return f"{self.zaid}{self.ace_suffix}"
+        return f"{self.zaid}{self.ace_suffix} ({self.temperature})"
+
+
 class Sensitivity(SensitivityAlgebraMixin):
     """
     Class to read, store, and process multi-group sensitivity profiles from Serpent or ERANOS output files.
@@ -45,16 +86,26 @@ class Sensitivity(SensitivityAlgebraMixin):
     ----------
     filepath : Path
         Path to the sensitivity file.
-        -'serpent': should end with "_sens0.m".
-        -'eranos': should end with ".eranos33" or ".eranos1968".
+            -'serpent': should end with "_sens0.m".
+            -'eranos': should end with ".eranos33" or ".eranos1968".
+            -'mcnp': should end with ".mcnp".
     reader : str
-        Sensitivity file format ('serpent' or 'eranos').
+        Sensitivity file format ('serpent', 'eranos', or 'mcnp').
     responses : list
         List of response parameters (e.g., 'keff', 'beff', etc.).
     materials : OrderedDict
-        Mapping of material names to their indices.
+        Mapping of material/spatial-zone labels to their indices.
+    spatial_zones : OrderedDict
+        For MCNP readers, mapping of material-axis labels to
+        :class:`SensitivitySpatialZone` metadata.
     zaid : OrderedDict
         Mapping of ZAID numbers (e.g., 942390) to their indices.
+    nuclide_instances : OrderedDict
+        For MCNP readers, mapping of ``(ZAID, ACE suffix)`` pairs to
+        :class:`SensitivityNuclideInstance` metadata.
+    ace_suffixes : OrderedDict
+        For MCNP readers, mapping of ZAID numbers to the ACE suffixes found in
+        the file.
     zais : OrderedDict
         Mapping of ZA strings (e.g., 'Pu-239') to their indices.
     channels : OrderedDict
@@ -68,7 +119,13 @@ class Sensitivity(SensitivityAlgebraMixin):
         energy order, consistently with ``group_structure``.
     sens : np.ndarray
         Sensitivity profiles whose shape is
-        (nResp, nMat, nZaid, nChannels, nE).
+        (nResp, nMat, nZaid, nChannels, nE). For MCNP readers, the material
+        axis stores the parsed spatial zones; ZAIDs with multiple ACE suffixes
+        require an explicit aggregation policy before they are selected without
+        ``ace_suffix`` or ``temperature``.
+    sens_nuclide_instances : np.ndarray
+        For MCNP readers, sensitivity profiles before aggregation over ACE
+        suffixes. The shape is (nResp, nMat, nNuclideInstances, nChannels, nE).
     sens_rsd : np.ndarray
         Relative standard deviations of the sensivity profile. When not available
         (e.g., for deterministic calculations), it is None.
@@ -84,13 +141,16 @@ class Sensitivity(SensitivityAlgebraMixin):
         group structure).
     NormalizeSensProfile(sens_profile, energy_vector)
         Normalize a sensitivity profile in lethargy.
-    get(resp=None, mat=None, MT=None, channel=None, za=None, g=None)
+    get(resp=None, mat=None, MT=None, channel=None, za=None, ace_suffix=None,
+        temperature=None, g=None)
         Extract sensitivity profiles and uncertainties for specified parameters.
         -'resp': response(s) to extract (e.g., 'keff', 'beff').
         -'mat': material(s) to extract (e.g., 'total', 'm1').
         -'MT': MT number(s) to extract when unambiguous.
         -'channel': SensitivityChannel object(s) to extract.
         -'za': ZA string(s) or number(s) to extract (e.g., 'Pu-239', 942390).
+        -'ace_suffix': MCNP ACE suffix(es) to extract before ZAID aggregation.
+        -'temperature': MCNP ACE temperature(s) to extract before ZAID aggregation.
         -'g': energy group(s) to extract (e.g., 1, 2, ..., n_groups).
 
     Raises
@@ -99,7 +159,11 @@ class Sensitivity(SensitivityAlgebraMixin):
         If the file format is not recognized or if the file structure is not as expected.
     """
 
-    def __init__(self, sensitivity_path, duplicate_policy="raise"):
+    def __init__(self,
+                 sensitivity_path,
+                 duplicate_policy="raise",
+                 mcnp_ace_temperatures=None,
+                 mcnp_ace_aggregation="raise"):
         """
         Initialize the Sensitivity object and read the sensitivity file.
 
@@ -110,14 +174,27 @@ class Sensitivity(SensitivityAlgebraMixin):
             files to merge.
             -'serpent': should end with "_sens0.m".
             -'eranos': should end with ".eranos33" or ".eranos1968".
+            -'mcnp': should end with ".mcnp".
         duplicate_policy : str, optional
             Policy for handling duplicate entries in the sensitivity file. Options are:
             -'raise': raise an error if duplicates are found (default).
             -'keep_first': keep the first occurrence and ignore subsequent duplicates.
             -'keep_last': keep the last occurrence and ignore previous duplicates.
+        mcnp_ace_temperatures : dict, optional
+            Mapping from MCNP ACE suffixes to temperatures. Keys may be passed
+            as ``".00c"`` or ``"00c"``. Used only by the MCNP reader.
+        mcnp_ace_aggregation : {"raise", "sum"}, optional
+            Policy used when an MCNP file reports the same ZAID with multiple
+            ACE suffixes and a profile is requested without ``ace_suffix`` or
+            ``temperature``. ``"raise"`` avoids implicit aggregation (default);
+            ``"sum"`` returns the coherent sum over ACE suffixes.
         """
         # --- validate and assign path
         self.filepath = sensitivity_path
+        self.mcnp_ace_temperatures = self._normalize_mcnp_ace_temperatures(
+            mcnp_ace_temperatures)
+        self.mcnp_ace_aggregation = self._normalize_mcnp_ace_aggregation(
+            mcnp_ace_aggregation)
 
         # single file
         if not self.is_multifile:
@@ -128,6 +205,8 @@ class Sensitivity(SensitivityAlgebraMixin):
                 self.from_serpent()
             elif self.reader == "eranos":
                 self.from_eranos()
+            elif self.reader == "mcnp":
+                self.from_mcnp()
             return
         else:
             # multi files
@@ -367,6 +446,386 @@ class Sensitivity(SensitivityAlgebraMixin):
         self.sens_rsd = None
         self.sens = dict_read
 
+    def from_mcnp(self):
+        """
+        Read and parse an MCNP sensitivity output file.
+
+        MCNP output before the first ``nuclear data ... sensitivity
+        coefficients`` section is ignored. MCNP spatial zones are stored on the
+        existing pyNDUS material axis and described in ``spatial_zones``.
+        """
+        parsed = self._parse_mcnp_sensitivity_file()
+        self.responses = parsed["responses"]
+        self.materials = parsed["materials"]
+        self.spatial_zones = parsed["spatial_zones"]
+        self.zaid = parsed["zaids"]
+        self.zais = self.zaid.keys()
+        self.nuclide_instances = parsed["nuclide_instances"]
+        self.ace_suffixes = parsed["ace_suffixes"]
+        self.channels = parsed["channels"]
+        self.energy_unit = "MeV"
+        self.group_structure = parsed["group_structure"]
+        self._sens = parsed["sens"]
+        self._sens_rsd = parsed["sens_rsd"]
+        self._sens_nuclide_instances = parsed["sens_nuclide_instances"]
+        self._sens_nuclide_instances_rsd = parsed["sens_nuclide_instances_rsd"]
+
+    @staticmethod
+    def _mcnp_zaid_to_pyndus(zaid):
+        """Convert an MCNP ZAID such as ``94239.00c`` to pyNDUS ZAID style (i.e. that of Serpent)."""
+        return int(zaid.split(".")[0]) * 10
+
+    @staticmethod
+    def _normalize_mcnp_ace_suffix(suffix):
+        """Normalize an MCNP ACE suffix to the form ``.00c``."""
+        suffix = str(suffix).strip().lower()
+        if "." in suffix:
+            return suffix[suffix.find("."):]
+        return f".{suffix}"
+
+    @classmethod
+    def _normalize_mcnp_ace_temperatures(cls, temperatures):
+        """Normalize user-provided MCNP ACE suffix-temperature metadata."""
+        if temperatures is None:
+            return {}
+        if not isinstance(temperatures, dict):
+            raise ValueError(
+                "'mcnp_ace_temperatures' must be a dict mapping suffixes to temperatures."
+            )
+        return {
+            cls._normalize_mcnp_ace_suffix(suffix): temperature
+            for suffix, temperature in temperatures.items()
+        }
+
+    @staticmethod
+    def _normalize_mcnp_ace_aggregation(policy):
+        """Normalize the MCNP ACE aggregation policy."""
+        allowed = {"raise", "sum"}
+        if policy not in allowed:
+            raise ValueError(
+                f"'mcnp_ace_aggregation' must be one of {sorted(allowed)}, "
+                f"not {policy!r}.")
+        return policy
+
+    @classmethod
+    def _mcnp_ace_suffix(cls, zaid):
+        """Return the ACE suffix from an MCNP ZAID such as ``94239.00c``."""
+        return cls._normalize_mcnp_ace_suffix(zaid)
+
+    @staticmethod
+    def _mcnp_temperature_matches(value, target):
+        """Return whether two MCNP ACE temperatures match."""
+        if value is None:
+            return False
+        if isinstance(value,
+                      (int, float)) and isinstance(target, (int, float)):
+            return np.isclose(float(value), float(target))
+        return value == target
+
+    @staticmethod
+    def _format_mcnp_available_temperatures(instances):
+        """Return a compact string with the MCNP temperatures in the object."""
+        temperatures = []
+        for instance in instances.values():
+            if instance.temperature is not None and instance.temperature not in temperatures:
+                temperatures.append(instance.temperature)
+        return temperatures or "none"
+
+    @staticmethod
+    def _mcnp_profile_zone(profile_number):
+        """Return the fallback spatial zone used when MCNP prints no zone."""
+        return SensitivitySpatialZone(int(profile_number))
+
+    def _parse_mcnp_sensitivity_file(self):
+        """Parse MCNP sensitivity coefficients into pyNDUS arrays."""
+        # --- patterns for MCNP sections, profiles, spatial zones and tables
+        section_re = re.compile(
+            r"^\s*nuclear data\s+(.+?)\s+sensitivity coefficients\s*$",
+            re.IGNORECASE)
+        profile_re = re.compile(r"^\s*sensitivity profile\s+(\d+)\s*$",
+                                re.IGNORECASE)
+        spatial_re = re.compile(
+            r"^\s*spatial zone\s+(\d+)\s+covering\s+(cell|material)\(s\):\s*$",
+            re.IGNORECASE)
+        channel_re = re.compile(r"^\s*(\d{4,6}\.\d{2}c)\s+(.+?)\s*$",
+                                re.IGNORECASE)
+        row_re = re.compile(
+            r"^\s*([+-]?\d+\.\d+E[+-]\d+)\s+([+-]?\d+\.\d+E[+-]\d+)\s+"
+            r"([+-]?\d+\.\d+E[+-]\d+)\s+([+-]?\d+(?:\.\d+)?(?:E[+-]\d+)?)\s*$",
+            re.IGNORECASE)
+
+        # --- containers for sparse profiles before building dense arrays
+        lines = self.filepath.read_text(errors="replace").splitlines()
+        data = OrderedDict()
+        responses = []
+        materials = []
+        spatial_zones = OrderedDict()
+        zaids = []
+        nuclide_instances = OrderedDict()
+        ace_suffixes = OrderedDict()
+        channels = []
+        group_structure = None
+        current_resp = None
+        current_profile = None
+        current_zone = None
+        current_mat = None
+        found_section = False
+
+        # --- scan the file after the first nuclear-data sensitivity section
+        i = 0
+
+        while i < len(lines):
+            line = lines[i]
+            section_match = section_re.match(line)
+            if section_match:
+                # --- start a new response block (keff, beta, etc.)
+                current_resp = " ".join(section_match.group(1).split()).lower()
+                if current_resp not in responses:
+                    responses.append(current_resp)
+                data.setdefault(current_resp, OrderedDict())
+                current_profile = None
+                current_zone = None
+                current_mat = None
+                found_section = True
+                i += 1
+                continue
+
+            if not found_section:
+                i += 1
+                continue
+
+            profile_match = profile_re.match(line)
+            if profile_match:
+                # --- MCNP sensitivity profile; spatial zones may follow
+                current_profile = int(profile_match.group(1))
+                current_zone = self._mcnp_profile_zone(current_profile)
+                current_mat = None
+                i += 1
+                continue
+
+            spatial_match = spatial_re.match(line)
+            if spatial_match and current_resp is not None:
+                # --- CELL/MAT spatial zone, stored on the material axis
+                if current_profile is None:
+                    current_profile = 1
+                entries, next_i = self._read_mcnp_spatial_zone_entries(
+                    lines, i + 1, channel_re, section_re, profile_re,
+                    spatial_re)
+                current_zone = SensitivitySpatialZone(
+                    current_profile, int(spatial_match.group(1)),
+                    spatial_match.group(2).lower(), tuple(entries))
+                current_mat = current_zone.label
+                if current_mat not in materials:
+                    materials.append(current_mat)
+                    spatial_zones[current_mat] = current_zone
+                data[current_resp].setdefault(current_mat, OrderedDict())
+                i = next_i
+                continue
+
+            channel_match = channel_re.match(line)
+            if channel_match and current_resp is not None:
+                # --- isotope/channel table; fallback to profile when no zone exists
+                if current_mat is None:
+                    if current_zone is None:
+                        current_zone = self._mcnp_profile_zone(current_profile or 1)
+                    current_mat = current_zone.label
+                    if current_mat not in materials:
+                        materials.append(current_mat)
+                        spatial_zones[current_mat] = current_zone
+                    data[current_resp].setdefault(current_mat, OrderedDict())
+                mcnp_zaid = channel_match.group(1)
+                zaid = self._mcnp_zaid_to_pyndus(mcnp_zaid)
+                ace_suffix = self._mcnp_ace_suffix(mcnp_zaid)
+                temperature = self.mcnp_ace_temperatures.get(ace_suffix)
+                instance = SensitivityNuclideInstance(zaid, ace_suffix,
+                                                      temperature)
+                channel = self._coerce_channel(channel_match.group(2))
+                lower, upper, sens, rsd, next_i = self._read_mcnp_channel_rows(
+                    lines, i + 1, row_re)
+                if sens:
+                    # --- register axes and check that all tables share one grid
+                    if zaid not in zaids:
+                        zaids.append(zaid)
+                    if (zaid, ace_suffix) not in nuclide_instances:
+                        nuclide_instances[(zaid, ace_suffix)] = instance
+                    ace_suffixes.setdefault(zaid, [])
+                    if ace_suffix not in ace_suffixes[zaid]:
+                        ace_suffixes[zaid].append(ace_suffix)
+                    if channel not in channels:
+                        channels.append(channel)
+                    current_grid = np.array([lower[0], *upper])
+                    if group_structure is None:
+                        group_structure = current_grid
+                    elif not np.allclose(group_structure, current_grid):
+                        raise SensitivityError(
+                            "Inconsistent MCNP sensitivity energy grid.")
+                    current_data = data[current_resp][current_mat].setdefault(
+                        (zaid, ace_suffix), OrderedDict())
+                    values = np.array(sens)
+                    rel_unc = np.array(rsd)
+                    if channel in current_data:
+                        # --- repeated ZA/channel, possibly from another ACE suffix
+                        values, rel_unc = self._combine_mcnp_channel_data(
+                            current_data[channel], values, rel_unc)
+                    current_data[channel] = (values, rel_unc)
+                i = next_i
+                continue
+
+            i += 1
+
+        if not found_section:
+            raise SensitivityError(
+                "No MCNP 'nuclear data ... sensitivity coefficients' section found."
+            )
+        if group_structure is None:
+            raise SensitivityError(
+                "No MCNP sensitivity coefficient rows found.")
+
+        return self._build_mcnp_sensitivity_arrays(data, responses, materials,
+                                                   spatial_zones, zaids,
+                                                   nuclide_instances,
+                                                   ace_suffixes, channels,
+                                                   group_structure)
+
+    @staticmethod
+    def _read_mcnp_spatial_zone_entries(lines, start, channel_re, section_re,
+                                        profile_re, spatial_re):
+        """Read CELL/MAT entries belonging to one MCNP spatial zone."""
+        entries = []
+        i = start
+        while i < len(lines):
+            line = lines[i]
+            if (channel_re.match(line) or section_re.match(line)
+                    or profile_re.match(line) or spatial_re.match(line)):
+                break
+            entries.extend(
+                int(value) for value in re.findall(r"\b\d+\b", line))
+            i += 1
+        return entries, i
+
+    @staticmethod
+    def _read_mcnp_channel_rows(lines, start, row_re):
+        """Read one MCNP channel table after its isotope/channel header."""
+        lower = []
+        upper = []
+        sens = []
+        rsd = []
+        started = False
+        i = start
+        while i < len(lines):
+            row_match = row_re.match(lines[i])
+            if row_match:
+                started = True
+                values = [float(row_match.group(j)) for j in range(1, 5)]
+                lower.append(values[0])
+                upper.append(values[1])
+                sens.append(values[2])
+                rsd.append(values[3])
+                i += 1
+                continue
+            if started:
+                break
+            i += 1
+        return lower, upper, sens, rsd, i
+
+    @staticmethod
+    def _combine_mcnp_channel_data(existing, values, rel_unc):
+        """Combine repeated MCNP blocks belonging to the same sensitivity profile."""
+        old_values, old_rel_unc = existing
+        total = old_values + values
+        old_abs_unc = np.abs(old_values) * old_rel_unc
+        new_abs_unc = np.abs(values) * rel_unc
+        total_abs_unc = np.sqrt(old_abs_unc**2 + new_abs_unc**2)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            total_rel_unc = np.where(total != 0, total_abs_unc / np.abs(total),
+                                     0)
+        return total, total_rel_unc
+
+    @staticmethod
+    def _build_mcnp_sensitivity_arrays(data, responses, materials,
+                                       spatial_zones, zaids, nuclide_instances,
+                                       ace_suffixes, channels,
+                                       group_structure):
+        """Build dense sensitivity/RSD arrays from sparse MCNP profile data."""
+        nResp = len(responses)
+        nMat = len(materials)
+        nZaid = len(zaids)
+        instance_keys = list(nuclide_instances.keys())
+        nInstances = len(instance_keys)
+        nChannels = len(channels)
+        nE = len(group_structure) - 1
+        sens = np.zeros((nResp, nMat, nZaid, nChannels, nE))
+        sens_rsd = np.zeros_like(sens)
+        sens_instances = np.zeros((nResp, nMat, nInstances, nChannels, nE))
+        sens_instances_rsd = np.zeros_like(sens_instances)
+        aggregate_set = np.zeros((nResp, nMat, nZaid, nChannels), dtype=bool)
+        for iResp, resp in enumerate(responses):
+            for iMat, mat in enumerate(materials):
+                for iInstance, instance_key in enumerate(instance_keys):
+                    zaid = instance_key[0]
+                    iZaid = zaids.index(zaid)
+                    for iChannel, channel in enumerate(channels):
+                        try:
+                            values, rsd = data[resp][mat][instance_key][channel]
+                        except KeyError:
+                            continue
+                        sens_instances[iResp, iMat, iInstance,
+                                       iChannel, :] = values
+                        sens_instances_rsd[iResp, iMat, iInstance,
+                                           iChannel, :] = rsd
+                        if aggregate_set[iResp, iMat, iZaid, iChannel]:
+                            values, rsd = Sensitivity._combine_mcnp_channel_data(
+                                (sens[iResp, iMat, iZaid, iChannel, :],
+                                 sens_rsd[iResp, iMat, iZaid, iChannel, :]),
+                                values, rsd)
+                        sens[iResp, iMat, iZaid, iChannel, :] = values
+                        sens_rsd[iResp, iMat, iZaid, iChannel, :] = rsd
+                        aggregate_set[iResp, iMat, iZaid, iChannel] = True
+
+        if Sensitivity._should_collapse_bare_mcnp_profiles(materials, spatial_zones):
+            materials, spatial_zones, sens, sens_rsd = Sensitivity._collapse_bare_mcnp_profiles(
+                materials, spatial_zones, sens, sens_rsd)
+            _, _, sens_instances, sens_instances_rsd = Sensitivity._collapse_bare_mcnp_profiles(
+                materials, spatial_zones, sens_instances, sens_instances_rsd)
+
+        return {
+            "responses": responses,
+            "materials": materials,
+            "spatial_zones": spatial_zones,
+            "zaids": zaids,
+            "nuclide_instances": nuclide_instances,
+            "ace_suffixes": OrderedDict((zaid, tuple(suffixes))
+                                        for zaid, suffixes in ace_suffixes.items()),
+            "channels": channels,
+            "group_structure": group_structure,
+            "sens": sens,
+            "sens_rsd": sens_rsd,
+            "sens_nuclide_instances": sens_instances,
+            "sens_nuclide_instances_rsd": sens_instances_rsd,
+        }
+
+    @staticmethod
+    def _should_collapse_bare_mcnp_profiles(materials, spatial_zones):
+        """Return whether MCNP profiles carry no explicit cell/material zones."""
+        if len(materials) <= 1:
+            return False
+        return all(material in spatial_zones and spatial_zones[material].kind
+                   == "profile" and spatial_zones[material].zone is None
+                   and len(spatial_zones[material].entries) == 0
+                   for material in materials)
+
+    @staticmethod
+    def _collapse_bare_mcnp_profiles(materials, spatial_zones, values, rsd):
+        """Sum bare MCNP profiles over the material axis."""
+        total = values.sum(axis=1, keepdims=True)
+        total_abs_std = np.sqrt(
+            np.sum((np.abs(values) * rsd)**2, axis=1, keepdims=True))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            total_rsd = np.where(total != 0.0, total_abs_std / np.abs(total),
+                                 0.0)
+        collapsed_zones = OrderedDict([("profile", SensitivitySpatialZone())])
+        return ["profile"], collapsed_zones, total, total_rsd
+
     @staticmethod
     def NormalizeSensProfile(sens_profile, energy_vector):
         """
@@ -486,7 +945,7 @@ class Sensitivity(SensitivityAlgebraMixin):
     @property
     def reader(self):
         """
-        Sensitivity file format ('serpent' or 'eranos').
+        Sensitivity file format ('serpent', 'eranos', or 'mcnp').
 
         Returns
         -------
@@ -503,7 +962,7 @@ class Sensitivity(SensitivityAlgebraMixin):
         Parameters
         ----------
         value : str
-            File format ('serpent' or 'eranos').
+            File format ('serpent', 'eranos', or 'mcnp').
 
         Raises
         ------
@@ -524,7 +983,7 @@ class Sensitivity(SensitivityAlgebraMixin):
         Returns
         -------
         str
-            Reader type ('serpent' or 'eranos').
+            Reader type ('serpent', 'eranos', or 'mcnp').
 
         Raises
         ------
@@ -536,10 +995,24 @@ class Sensitivity(SensitivityAlgebraMixin):
             return "serpent"
         elif self.filepath.suffix in [".eranos33", ".eranos1968"]:
             return "eranos"
+        elif self.filepath.suffix == ".mcnp":
+            return "mcnp"
+        elif self.filepath.suffix == ".txt" and self._is_mcnp_sensitivity_output():
+            return "mcnp"
         else:
             raise SensitivityError(
                 f"Cannot determine reader type from file extension {self.filepath.suffix}"
             )
+
+    def _is_mcnp_sensitivity_output(self):
+        """Return whether a text file contains MCNP sensitivity coefficients."""
+        section_re = re.compile(
+            r"nuclear data\s+.+?\s+sensitivity coefficients", re.IGNORECASE)
+        with open(self.filepath, "r", errors="replace") as file:
+            for line in file:
+                if section_re.search(line):
+                    return True
+        return False
 
     @property
     def responses(self):
@@ -917,7 +1390,7 @@ class Sensitivity(SensitivityAlgebraMixin):
         if hasattr(self, "_energy_unit"):
             return self._energy_unit
 
-        if getattr(self, "reader", None) == "serpent":
+        if getattr(self, "reader", None) in {"serpent", "mcnp"}:
             return "MeV"
         elif getattr(self, "reader", None) == "eranos":
             return "eV"
@@ -1159,6 +1632,39 @@ class Sensitivity(SensitivityAlgebraMixin):
         else:
             raise ValueError(f"Unknown reader {self.reader}")
 
+    @property
+    def sens_nuclide_instances(self):
+        """
+        MCNP sensitivity profiles before aggregation over ACE suffixes.
+
+        Returns
+        -------
+        np.ndarray
+            Sensitivity array whose shape is
+            (nResp, nMat, nNuclideInstances, nChannels, nE).
+        """
+        if not hasattr(self, "_sens_nuclide_instances"):
+            raise ValueError(
+                "'sens_nuclide_instances' is available only for MCNP readers.")
+        return self._sens_nuclide_instances
+
+    @property
+    def sens_nuclide_instances_rsd(self):
+        """
+        MCNP sensitivity RSDs before aggregation over ACE suffixes.
+
+        Returns
+        -------
+        np.ndarray
+            Sensitivity RSD array whose shape is
+            (nResp, nMat, nNuclideInstances, nChannels, nE).
+        """
+        if not hasattr(self, "_sens_nuclide_instances_rsd"):
+            raise ValueError(
+                "'sens_nuclide_instances_rsd' is available only for MCNP readers."
+            )
+        return self._sens_nuclide_instances_rsd
+
     def _sens_eranos(self, value):
         """
         Build the sensitivity array for ERANOS files.
@@ -1384,8 +1890,8 @@ class Sensitivity(SensitivityAlgebraMixin):
         return selected
 
     def get(self, resp=None, mat=None, MT=None, channel=None, average_MF=None,
-            covariance_MF=None, covariance_MT=None, L=None, za=None, g=None,
-            group_order='ascending'):
+            covariance_MF=None, covariance_MT=None, L=None, za=None,
+            ace_suffix=None, temperature=None, g=None, group_order='ascending'):
         """
         Extract sensitivity profiles and uncertainties for specified parameters.
 
@@ -1407,6 +1913,13 @@ class Sensitivity(SensitivityAlgebraMixin):
         za : str, int, or list, optional
             ZA string(s) or number(s) to extract, e.g., 'Pu-239', 942390 or ['Pu-239', 'Pu-240'].
             If None, all ZAIDs are extracted.
+        ace_suffix : str or list, optional
+            MCNP ACE suffix(es), e.g. ``".00c"`` or ``".02c"``. If provided,
+            profiles are extracted before aggregation over ACE suffixes.
+        temperature : int, float, str, or list, optional
+            MCNP ACE temperature(s) provided through ``mcnp_ace_temperatures``.
+            If provided, profiles are extracted before aggregation over ACE
+            suffixes. Numeric values are compared with ``numpy.isclose``.
         g : int or list, optional
             Energy group(s) to extract, e.g., 1, 2, ..., n_groups.
             If None, all groups are extracted.
@@ -1487,6 +2000,57 @@ class Sensitivity(SensitivityAlgebraMixin):
             for k, v in self.zaid.items():
                 iZ.append(v)
 
+        use_nuclide_instances = ace_suffix is not None or temperature is not None
+        selected_zaids = [list(self.zaid.keys())[idx] for idx in iZ]
+        if use_nuclide_instances:
+            if self.reader != "mcnp":
+                raise ValueError(
+                    "'ace_suffix' and 'temperature' can be used only with MCNP sensitivities."
+                )
+            if ace_suffix is None:
+                suffixes = None
+            else:
+                suffixes = ace_suffix if isinstance(ace_suffix,
+                                                    list) else [ace_suffix]
+                suffixes = [
+                    self._normalize_mcnp_ace_suffix(suffix)
+                    for suffix in suffixes
+                ]
+            temperatures = (None if temperature is None else temperature if
+                            isinstance(temperature, list) else [temperature])
+            instance_keys = list(self.nuclide_instances.keys())
+            iZ = [
+                i for i, (zaid, suffix) in enumerate(instance_keys)
+                if zaid in selected_zaids and
+                (suffixes is None or suffix in suffixes) and (
+                    temperatures is None or any(
+                        self._mcnp_temperature_matches(
+                            self.nuclide_instances[(zaid,
+                                                    suffix)].temperature, temp)
+                        for temp in temperatures))
+            ]
+            if not iZ:
+                available_temperatures = self._format_mcnp_available_temperatures(
+                    self.nuclide_instances)
+                raise ValueError(
+                    f"No MCNP nuclide instance matches za={za!r}, "
+                    f"ace_suffix={ace_suffix!r}, temperature={temperature!r}. "
+                    f"Available temperatures: {available_temperatures}.")
+        elif (getattr(self, "_reader", None) == "mcnp"
+              and getattr(self, "mcnp_ace_aggregation", "raise") == "raise"):
+            ambiguous = OrderedDict(
+                (zaid, self.ace_suffixes[zaid]) for zaid in selected_zaids
+                if len(self.ace_suffixes.get(zaid, ())) > 1)
+            if ambiguous:
+                details = ", ".join(f"{zaid}: {suffixes}"
+                                    for zaid, suffixes in ambiguous.items())
+                raise ValueError(
+                    "MCNP sensitivity data contain multiple ACE suffixes for "
+                    f"the selected ZAID(s): {details}. Select one profile with "
+                    "'ace_suffix' or 'temperature', or instantiate Sensitivity "
+                    "with mcnp_ace_aggregation='sum' if summing the suffix "
+                    "contributions is the intended coherent perturbation.")
+
         # --- get resp
         if resp is not None:
             if isinstance(resp, str):
@@ -1538,9 +2102,12 @@ class Sensitivity(SensitivityAlgebraMixin):
                 iG = iG[::-1]
 
         # --- get sensitivity vector and uncertainty
-        S_avg = self.sens[np.ix_(iR, iM, iZ, iP, iG)]
-        if self.sens_rsd is not None:
-            S_rsd = self.sens_rsd[np.ix_(iR, iM, iZ, iP, iG)]
+        sens_array = self.sens_nuclide_instances if use_nuclide_instances else self.sens
+        sens_rsd_array = (self.sens_nuclide_instances_rsd
+                          if use_nuclide_instances else self.sens_rsd)
+        S_avg = sens_array[np.ix_(iR, iM, iZ, iP, iG)]
+        if sens_rsd_array is not None:
+            S_rsd = sens_rsd_array[np.ix_(iR, iM, iZ, iP, iG)]
             return S_avg, S_rsd
         else:
             return S_avg
