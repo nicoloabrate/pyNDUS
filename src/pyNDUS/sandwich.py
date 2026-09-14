@@ -219,6 +219,25 @@ def _channel_requested_by_user(channel, requested_MTs):
                    for mt in getattr(channel, "covariance_MTs", ())))
 
 
+def _default_material_for_integral_comparison(sens):
+    """Return the material/profile used by whole-system comparisons."""
+    if sens.reader == 'serpent':
+        return 'total'
+    if sens.reader == 'eranos':
+        return 'REACTOR'
+    raise SandwichError(
+        "Cannot infer a default material for integral comparison from "
+        f"{sens.reader!r} sensitivity data. Pass an object with a whole-system "
+        "material/profile.")
+
+
+def _sensitivity_with_rsd(avg, rsd, sigma=1):
+    """Return sensitivity coefficients with scaled relative deviations."""
+    avg = np.squeeze(avg)
+    rsd = np.squeeze(rsd)
+    return utils.np2unp(avg, float(sigma) * rsd)
+
+
 def _map_mf2mt_from_sensitivity_channels(sens,
                                          sens2=None,
                                          selected_MFs=None,
@@ -527,7 +546,7 @@ class Sandwich:
                     f"'sens2' arg must be of type pyNDUS.Sensitivity, not of type {type(sens2)}"
                 )
             else:
-                if sens.sens_rsd is not None:
+                if sens2.sens_rsd is not None:
                     sens2_MC = True
 
         if covmat is not None:
@@ -1205,15 +1224,8 @@ class Sandwich:
             Metadata-to-index mapping used during the calculation.
         """
 
-        if sens.reader == 'serpent':
-            mat = 'total'
-        elif sens.reader == 'eranos':
-            mat = 'REACTOR'
-
-        if sens2.reader == 'serpent':
-            mat2 = 'total'
-        elif sens2.reader == 'eranos':
-            mat2 = 'REACTOR'
+        mat = _default_material_for_integral_comparison(sens)
+        mat2 = _default_material_for_integral_comparison(sens2)
 
         map_MF2MT = {}
         for za, mts_or_mfs in list_MTs.items():
@@ -1268,8 +1280,8 @@ class Sandwich:
                                                group_order="ascending")
                             if sens_MC and isinstance(result1, tuple):
                                 avg1, rsd1 = result1
-                                vector1 = utils.np2unp(
-                                    np.squeeze(avg1), sigma * np.squeeze(rsd1))
+                                vector1 = _sensitivity_with_rsd(avg1, rsd1,
+                                                                sigma=sigma)
                             else:
                                 vector1 = np.squeeze(result1)
                         else:
@@ -1281,8 +1293,8 @@ class Sandwich:
                                                 group_order="ascending")
                             if sens_MC and isinstance(result2, tuple):
                                 avg2, rsd2 = result2
-                                vector2 = utils.np2unp(
-                                    np.squeeze(avg2), sigma * np.squeeze(rsd2))
+                                vector2 = _sensitivity_with_rsd(avg2, rsd2,
+                                                                sigma=sigma)
                             else:
                                 vector2 = np.squeeze(result2)
                         else:
@@ -1426,8 +1438,8 @@ class Sandwich:
                                     S_rsd = None
 
                                 if S_rsd is not None:
-                                    S = utils.np2unp(np.squeeze(S_avg),
-                                                     sigma * np.squeeze(S_rsd))
+                                    S = _sensitivity_with_rsd(S_avg, S_rsd,
+                                                              sigma=sigma)
                                 else:
                                     S = np.squeeze(S_avg)
 
@@ -1520,16 +1532,16 @@ class Sandwich:
                                     S_rsd_l = None
 
                                 if S_rsd_r is not None:
-                                    S_r = utils.np2unp(
-                                        np.squeeze(S_avg_r),
-                                        sigma * np.squeeze(S_rsd_r))
+                                    S_r = _sensitivity_with_rsd(S_avg_r,
+                                                                S_rsd_r,
+                                                                sigma=sigma)
                                 else:
                                     S_r = np.squeeze(S_avg_r)
 
                                 if S_rsd_l is not None:
-                                    S_l = utils.np2unp(
-                                        np.squeeze(S_avg_l),
-                                        sigma * np.squeeze(S_rsd_l))
+                                    S_l = _sensitivity_with_rsd(S_avg_l,
+                                                                S_rsd_l,
+                                                                sigma=sigma)
                                 else:
                                     S_l = np.squeeze(S_avg_l)
                             else:
@@ -1653,15 +1665,19 @@ class Sandwich:
             Metadata-to-index mapping used during the calculation.
         """
 
-        if sens.reader == 'serpent':
-            mat = 'total'
-        elif sens.reader == 'eranos':
-            mat = 'REACTOR'
+        mat = _default_material_for_integral_comparison(sens)
+        mat2 = _default_material_for_integral_comparison(sens2)
 
-        if sens2.reader == 'serpent':
-            mat2 = 'total'
-        elif sens2.reader == 'eranos':
-            mat2 = 'REACTOR'
+        def sensitivity_vector(obj, response, material, channel, zaid, exists):
+            """Return one sensitivity vector, carrying RSDs when available."""
+            if not exists:
+                return np.zeros((obj.n_groups, ))
+            result = obj.get(resp=[response], mat=[material], MT=[channel], za=[zaid],
+                             group_order="ascending")
+            if isinstance(result, tuple):
+                avg, rsd = result
+                return _sensitivity_with_rsd(avg, rsd, sigma=sigma)
+            return np.squeeze(result)
 
         # --- apply sandwich rule
         output = {}
@@ -1700,55 +1716,14 @@ class Sandwich:
                                  and mat in sens.materials
                                  and sens_key in sens.MTs and za in sens.zaid)
                         exist2 = (resp in sens2.responses
-                                  and mat in sens2.materials
+                                  and mat2 in sens2.materials
                                   and sens2_key in sens2.MTs
                                   and za in sens2.zaid)
                         # get group-wise sensitivity vector
-                        if sens_MC:
-                            if exist:
-                                S_avg_r, S_rsd_r = sens.get(
-                                    resp=[resp], mat=[mat], MT=[sens_key], za=[za],
-                                    group_order="ascending")
-                            else:
-                                S_avg_r = np.zeros((sens.n_groups, ))
-                                S_rsd_r = None
-
-                            if exist2:
-                                S_avg_l, S_rsd_l = sens2.get(
-                                    resp=[resp], mat=[mat2], MT=[sens2_key], za=[za],
-                                    group_order="ascending")
-                            else:
-                                S_avg_l = np.zeros((sens.n_groups, ))
-                                S_rsd_l = None
-
-                            if S_rsd_r is not None:
-                                S_r = utils.np2unp(np.squeeze(S_avg_r),
-                                                   sigma * np.squeeze(S_rsd_r))
-                            else:
-                                S_r = np.squeeze(S_avg_r)
-
-                            if S_rsd_l is not None:
-                                S_l = utils.np2unp(np.squeeze(S_avg_l),
-                                                   sigma * np.squeeze(S_rsd_l))
-                            else:
-                                S_l = np.squeeze(S_avg_l)
-
-                        else:
-                            if exist:
-                                S_r = np.squeeze(
-                                    sens.get(resp=[resp], mat=[mat], MT=[sens_key],
-                                             za=[za],
-                                             group_order="ascending"))
-                            else:
-                                S_r = np.zeros((sens.n_groups, ))
-
-                            if exist2:
-                                S_l = np.squeeze(
-                                    sens2.get(resp=[resp], mat=[mat2],
-                                              MT=[sens2_key], za=[za],
-                                              group_order="ascending"))
-                            else:
-                                S_l = np.zeros((sens.n_groups, ))
+                        S_r = sensitivity_vector(sens, resp, mat, sens_key, za,
+                                                 exist)
+                        S_l = sensitivity_vector(sens2, resp, mat2, sens2_key,
+                                                 za, exist2)
 
                         # get covariance matrix
                         if cov_df is not None:
@@ -1806,54 +1781,14 @@ class Sandwich:
                                  and sens_key_r in sens.MTs
                                  and za in sens.zaid)
                         exist2 = (resp in sens2.responses
-                                  and mat in sens2.materials
+                                  and mat2 in sens2.materials
                                   and sens2_key_l in sens2.MTs
                                   and za in sens2.zaid)
                         # get group-wise sensitivity vector
-                        if sens_MC:
-                            if exist:
-                                S_avg_r, S_rsd_r = sens.get(
-                                    resp=[resp], mat=[mat], MT=[sens_key_r], za=[za],
-                                    group_order="ascending")
-                            else:
-                                S_avg_r = np.zeros((sens.n_groups, ))
-                                S_rsd_r = None
-
-                            if exist2:
-                                S_avg_l, S_rsd_l = sens2.get(
-                                    resp=[resp], mat=[mat2], MT=[sens2_key_l], za=[za],
-                                    group_order="ascending")
-                            else:
-                                S_avg_l = np.zeros((sens.n_groups, ))
-                                S_rsd_l = None
-
-                            if S_rsd_r is not None:
-                                S_r = utils.np2unp(np.squeeze(S_avg_r),
-                                                   sigma * np.squeeze(S_rsd_r))
-                            else:
-                                S_r = np.squeeze(S_avg_r)
-
-                            if S_rsd_l is not None:
-                                S_l = utils.np2unp(np.squeeze(S_avg_l),
-                                                   sigma * np.squeeze(S_rsd_l))
-                            else:
-                                S_l = np.squeeze(S_avg_l)
-                        else:
-                            if exist:
-                                S_r = np.squeeze(
-                                    sens.get(resp=[resp], mat=[mat],
-                                             MT=[sens_key_r], za=[za],
-                                             group_order="ascending"))
-                            else:
-                                S_r = np.zeros((sens.n_groups, ))
-
-                            if exist2:
-                                S_l = np.squeeze(
-                                    sens2.get(resp=[resp], mat=[mat2],
-                                              MT=[sens2_key_l], za=[za],
-                                              group_order="ascending"))
-                            else:
-                                S_l = np.zeros((sens.n_groups, ))
+                        S_r = sensitivity_vector(sens, resp, mat, sens_key_r,
+                                                 za, exist)
+                        S_l = sensitivity_vector(sens2, resp, mat2,
+                                                 sens2_key_l, za, exist2)
 
                         # get covariance matrix
                         if cov_df is not None:
@@ -1899,15 +1834,15 @@ class Sandwich:
                                 )
 
         # --- get normalisation coefficients
-        za_dict_1 = dict(zip(sens.zaid.keys(), sens.zais.keys()))
+        sens_MC1 = sens.sens_rsd is not None
+        sens_MC2 = sens2.sens_rsd is not None
         unc1, dict_map1 = Sandwich.compute_uncertainty(
-            sens, covmat, list_resp, [mat], map_MF2MT, za_dict_1, sens_MC,
+            sens, covmat, list_resp, [mat], map_MF2MT, za_dict, sens_MC1,
             sigma=sigma, sum_MFs=sum_MFs, include_MF=include_MF,
             missing_cov=missing_cov, missing_cov_rsd=missing_cov_rsd,
             missing_cov_corr=missing_cov_corr)
-        za_dict_2 = dict(zip(sens2.zaid.keys(), sens2.zais.keys()))
         unc2, dict_map2 = Sandwich.compute_uncertainty(
-            sens2, covmat, list_resp, [mat2], map_MF2MT, za_dict_2, sens_MC,
+            sens2, covmat, list_resp, [mat2], map_MF2MT, za_dict, sens_MC2,
             sigma=sigma, sum_MFs=sum_MFs, include_MF=include_MF,
             missing_cov=missing_cov, missing_cov_rsd=missing_cov_rsd,
             missing_cov_corr=missing_cov_corr)
