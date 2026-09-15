@@ -99,7 +99,8 @@ class Sensitivity(SensitivityAlgebraMixin):
         For MCNP readers, mapping of material-axis labels to
         :class:`SensitivitySpatialZone` metadata.
     zaid : OrderedDict
-        Mapping of ZAID numbers (e.g., 942390) to their indices.
+        Mapping of ZAID numbers (e.g., 942390) to their indices. Serpent's
+        aggregate all-isotope profile is retained as ZAID ``0``.
     nuclide_instances : OrderedDict
         For MCNP readers, mapping of ``(ZAID, ACE suffix)`` pairs to
         :class:`SensitivityNuclideInstance` metadata.

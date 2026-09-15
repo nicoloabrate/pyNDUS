@@ -486,6 +486,42 @@ def test_default_mt_selection_excludes_total_cross_section(monkeypatch):
     )
 
 
+def test_serpent_total_zaid_without_covariance_is_ignored_by_sandwich(monkeypatch):
+    """Retain ZAID=0 in sensitivities without treating it as a covariance ZAID."""
+    monkeypatch.setattr(sandwich_module, "Sensitivity", FakeSensitivityForInit)
+    monkeypatch.setattr(sandwich_module, "Covariance", FakeCovZAForInit)
+
+    total_za = 0
+    physical_za = 922350
+    sens = FakeSensitivityForInit(
+        {
+            ("keff", "fuel", total_za, 18): np.array([100.0, 0.0]),
+            ("keff", "fuel", physical_za, 18): np.array([1.0, 0.0]),
+        },
+    )
+    covmat = {
+        physical_za: FakeCovZAForInit({
+            "errorr33": {(18, 18): np.diag([4.0, 0.0])},
+        })
+    }
+
+    sand = Sandwich(
+        sens=sens,
+        covmat=covmat,
+        list_resp=["keff"],
+        list_mat=["fuel"],
+        list_MFs=[33],
+    )
+
+    assert total_za not in sand.za
+    assert list(sand.za) == [physical_za]
+    npt.assert_allclose(
+        sand.uncertainty_standard_deviation.loc[("keff", "fuel"),
+                                                 "variance"],
+        4.0,
+    )
+
+
 def test_uncertainty_mc_offdiagonal_passes_za_as_keyword(monkeypatch):
     """Use keyword arguments when reading off-diagonal MC sensitivities."""
     monkeypatch.setattr(sandwich_module, "Covariance", FakeCovZAForInit)

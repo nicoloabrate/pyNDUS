@@ -84,6 +84,31 @@ def _extract_profile(sensitivity, response, material, za, mt):
     return avg.reshape(-1), rsd.reshape(-1)
 
 
+def test_serpent_total_zaid_zero_is_preserved(tmp_path, monkeypatch, energy_grid):
+    """Keep Serpent's aggregate all-isotope profile with the total label."""
+    sensitivity_file = _make_fake_file(tmp_path, "total_sens0.m")
+    parser = FakeSerpentSensitivity(
+        responses=["keff"],
+        materials=["total"],
+        zaids=[0, 922350],
+        perturbations=["xs 18"],
+        energies=energy_grid,
+        profiles={
+            ("keff", "total", 0, "xs 18"): ([1.0, 2.0], [0.01, 0.02]),
+            ("keff", "total", 922350, "xs 18"): ([3.0, 4.0], [0.03, 0.04]),
+        },
+    )
+    monkeypatch.setattr(getsensitivity_module.st, "read", lambda path: parser)
+
+    sens = Sensitivity(sensitivity_file)
+
+    assert list(sens.zaid) == [0, 922350]
+    assert list(sens.zais) == ["total", "U-235"]
+    avg, rsd = _extract_profile(sens, "keff", "total", 0, 18)
+    npt.assert_allclose(avg, [1.0, 2.0])
+    npt.assert_allclose(rsd, [0.01, 0.02])
+
+
 def test_multifile_merge_disjoint_profiles(tmp_path, monkeypatch, energy_grid, ):
     """Merge disjoint files and preserve each response, isotope, MT, and RSD."""
     file_1 = _make_fake_file(tmp_path, "case_1_sens0.m")

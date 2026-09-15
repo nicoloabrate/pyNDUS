@@ -9,11 +9,13 @@ from pyNDUS import utils
 def test_zais2zaid_basic():
     """Convert a basic isotope label to pyNDUS ZAID form."""
     assert utils.zais2zaid("U-235") == 922350
+    assert utils.zais2zaid("total") == 0
 
 
 def test_zaid2zais_basic():
     """Convert a basic pyNDUS ZAID value to isotope-label form."""
     assert utils.zaid2zais(922350) == "U-235"
+    assert utils.zaid2zais(0) == "total"
 
 
 def test_np2unp_preserves_nominal_values():

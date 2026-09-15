@@ -127,8 +127,12 @@ def zais2zaid(zaid):
     Returns
     -------
     int
-        Integer ZAID identifier.
+        Integer ZAID identifier. The special label ``"total"`` maps to
+        ``0``, the aggregate Serpent profile over all isotopes.
     """
+    if isinstance(zaid, str) and zaid.lower() == "total":
+        return 0
+
     AS2Z = AStoZ()
     AS, A = zaid.split('-')
     A = int(A)
@@ -155,8 +159,15 @@ def zaid2zais(zaid):
     Returns
     -------
     str
-        Isotope label in ``"<element>-<mass>"`` form.
+        Isotope label in ``"<element>-<mass>"`` form, or ``"total"`` for
+        the aggregate ZAID ``0`` used by Serpent.
     """
+    try:
+        if int(zaid) == 0:
+            return "total"
+    except (TypeError, ValueError):
+        pass
+
     zaid = str(zaid)
     if len(zaid) == 4:
         A = zaid[-3:]

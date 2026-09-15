@@ -763,7 +763,8 @@ class Sandwich:
                     if za in covmat.keys():
                         za_dict[za] = zais
                 else:
-                    za_dict[za] = zais
+                    if za in covmat.keys():
+                        za_dict[za] = zais
             else:
                 za_dict[za] = zais
 
