@@ -7,4 +7,5 @@ pytest
 datetime
 sandy>=1.0.38
 uncertainties
-serpentTools
+serpentTools>=0.10.1,<0.11; python_version < "3.9"
+serpentTools>=0.11; python_version >= "3.9"
