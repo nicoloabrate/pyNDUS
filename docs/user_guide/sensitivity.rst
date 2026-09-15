@@ -4,8 +4,9 @@ Sensitivity profiles
 Single-file input
 -----------------
 
-``Sensitivity`` recognizes Serpent files ending in ``_sens0.m`` and ERANOS
-files using the supported ``.eranos33`` or ``.eranos1968`` suffixes.
+``Sensitivity`` recognizes Serpent files ending in ``_sens0.m``, ERANOS files
+using the supported ``.eranos33`` or ``.eranos1968`` suffixes, and MCNP
+sensitivity outputs ending in ``.mcnp``.
 
 .. code-block:: python
 
@@ -17,9 +18,65 @@ The object stores responses, materials, nuclides, sensitivity channels, group
 boundaries, mean sensitivity profiles, and—when available—the relative standard
 deviations reported by the source calculation.
 
+Serpent may provide an aggregate sensitivity profile with ``ZAID=0``. pyNDUS
+retains this profile for cross-checks and exposes its isotope label as
+``"total"``. It is not an isotope covariance channel: uncertainty and
+representativity calculations include it only when a covariance object is
+explicitly available under key ``0``.
+
 ERANOS perturbation columns are normalized through the same channel registry.
 The supported labels are ``CAPTURE``, ``FISSION``, ``ELASTIC``,
 ``INELASTIC``, ``N,XN``, and ``NU``; ``N,XN`` is mapped to MT=16.
+
+For MCNP files, CELL- and MAT-based spatial zones are kept distinct on the
+existing material axis. A zone such as ``spatial zone 1 covering cell(s): 149``
+is exposed with a label like ``"profile 1 zone 1 cell 149"``, while
+``spatial zone 1 covering material(s): 1`` becomes
+``"profile 2 zone 1 material 1"``. If MCNP prints no explicit spatial-zone
+block, pyNDUS falls back to ``"profile N"``. The structured metadata are also
+available in ``sens.spatial_zones``.
+
+MCNP channel names such as ``elastic``, ``n,gamma``, ``prompt chi``,
+``delayed chi``, and ``elastic law`` are normalized to ``SensitivityChannel``
+objects. Repeated isotope/channel blocks inside the same parsed spatial zone
+are accumulated and their relative uncertainties are combined through absolute
+uncertainties in quadrature.
+
+MCNP ACE suffixes are preserved as metadata. If the same isotope is reported
+with multiple ACE tables, for example ``92235.00c`` and ``92235.02c``, pyNDUS
+stores the per-suffix profiles separately. By default, ``get(za=922350)``
+raises an error when more than one suffix is available, because pyNDUS cannot
+know whether the suffixes should be combined. Use ``temperature`` or
+``ace_suffix`` to extract one MCNP table:
+
+.. code-block:: python
+
+   sens = Sensitivity("case.mcnp", mcnp_ace_temperatures={
+       ".00c": 293.6,
+       ".02c": 600.0,
+   })
+
+   avg_300K, rsd_300K = sens.get(za=922350, temperature=293.6)
+   avg_00c, rsd_00c = sens.get(za=922350, ace_suffix=".00c")
+
+If the printed MCNP coefficients are normalized to the same global response
+and the intended perturbation is the same nuclear-data variation applied
+coherently to all ACE suffixes, users can opt in to the summed profile:
+
+.. code-block:: python
+
+   sens = Sensitivity("case.mcnp", mcnp_ace_aggregation="sum")
+   avg_sum, rsd_sum = sens.get(za=922350)
+
+This option is deliberately explicit: if the reported quantities are ratios
+with different denominators, the correct aggregate would require the
+corresponding weights/denominators and is not inferred from the sensitivity
+block alone.
+
+``sens.ace_suffixes`` and ``sens.nuclide_instances`` record which suffixes
+were present. The suffix-to-temperature mapping is optional and must be
+provided by the user when needed; without it, ``temperature=...`` cannot be
+resolved and users should select by ``ace_suffix`` instead.
 
 Serpent perturbations and ENDF channels
 ---------------------------------------
@@ -57,9 +114,9 @@ in more than one MF, pyNDUS raises an explicit ambiguity error.
    avg, rsd = sens.get(channel=fission_xs)
 
 ``SensitivityChannel.from_alias("chi prompt")`` is intended for reader labels
-such as Serpent perturbation names or other code-specific labels. Known aliases
-are normalized to their ENDF-aware channel, so ``"ela leg mom 1"`` identifies
-the first elastic Legendre moment.
+such as Serpent perturbation names,or  MCNP labels. Known aliases
+are normalized to their ENDF-aware channel, so ``"scattering law"`` (MCNP) and
+``"ela leg mom 1"`` (Serpent) both identify the first elastic Legendre moment.
 
 ``SensitivityChannel.from_endf(...)`` is intended for code that already knows
 the ENDF identifiers. It accepts either average-side identifiers, such as

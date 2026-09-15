@@ -16,6 +16,18 @@ Read a sensitivity file
    print(sens.responses)
    print(sens.channels)
 
+MCNP sensitivity outputs can be read from ``.mcnp`` files. CELL- and MAT-based
+spatial zones are exposed on the existing material axis with labels such as
+``"profile 1 zone 1 cell 149"`` or ``"profile 2 zone 1 material 1"``; when no
+explicit zone is printed, pyNDUS uses ``"profile N"``.
+ACE suffixes such as ``.00c`` and ``.02c`` are preserved in
+``sens.ace_suffixes``; users can pass ``mcnp_ace_temperatures`` to attach their
+own suffix-temperature map and then select profiles with
+``sens.get(za=922350, temperature=300)``. If multiple ACE suffixes are present
+for the same ZAID, pyNDUS raises by default when no suffix or temperature is
+selected. Use ``mcnp_ace_aggregation="sum"`` only when a coherent sum of the
+suffix contributions is the intended quantity.
+
 Multiple Serpent sensitivity files can be merged into a single object when
 their energy-group structures are consistent:
 
@@ -101,6 +113,9 @@ Run a sandwich calculation
        list_resp=["keff"],
        list_mat=["total"],
    )
+
+By default, ``list_MTs=None`` excludes ENDF MT=1, which denotes the total
+cross section. Include it explicitly with ``list_MTs=[1]`` when required.
 
 The default Sandwich ``calculation_type`` is ``uncertainty`` but also ``representativity`` and ``similariy`` are available.
 The covariance dictionary must contain compatible ``Covariance`` objects.

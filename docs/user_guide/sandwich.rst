@@ -14,6 +14,11 @@ An uncertainty calculation combines sensitivity vectors with compatible
 covariance blocks. Diagonal reaction terms and off-diagonal cross-reaction
 terms are retained in the result structure.
 
+When ``list_MTs=None``, ``Sandwich`` excludes ENDF MT=1 from the automatic
+selection because it is the total cross section rather than an independent
+reaction channel. Pass ``list_MTs=[1]`` (or include ``1`` in the list) when
+its covariance contribution is intentionally required.
+
 If the sensitivity reader provides Monte Carlo relative standard deviations
 (``sens_rsd``), the sensitivity coefficients are treated as uncertain
 quantities. pyNDUS converts them to ``uncertainties`` variables and propagates
