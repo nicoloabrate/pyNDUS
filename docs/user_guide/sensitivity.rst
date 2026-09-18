@@ -27,6 +27,9 @@ explicitly available under key ``0``.
 ERANOS perturbation columns are normalized through the same channel registry.
 The supported labels are ``CAPTURE``, ``FISSION``, ``ELASTIC``,
 ``INELASTIC``, ``N,XN``, and ``NU``; ``N,XN`` is mapped to MT=16.
+For ERANOS, ``CAPTURE`` is mapped to MT=102 except for ``B-10``, where
+``get(..., za="B-10", channel="capture")`` resolves to MT=107 because the
+dominant capture channel is ``n,alpha``.
 
 For MCNP files, CELL- and MAT-based spatial zones are kept distinct on the
 existing material axis. A zone such as ``spatial zone 1 covering cell(s): 149``
