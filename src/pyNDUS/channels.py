@@ -125,6 +125,7 @@ INELASTIC_XS = SensitivityChannel(3, 4, 33, 4, name="inelastic")
 FISSION_XS = SensitivityChannel(3, 18, 33, 18, name="fission")
 CAPTURE_XS = SensitivityChannel(3, 102, 33, 102, name="capture")
 N_XN_XS = SensitivityChannel(3, 16, 33, 16, name="n,xn")
+N_ALPHA_XS = SensitivityChannel(3, 107, 33, 107, name="n,alpha")
 
 _ALIASES = {
             "nubar total": NUBAR_TOTAL,
@@ -150,6 +151,9 @@ _ALIASES = {
             "n,xn": N_XN_XS,
             "nxn": N_XN_XS,
             "xs 16": N_XN_XS,
+            "n,alpha": N_ALPHA_XS,
+            "nalpha": N_ALPHA_XS,
+            "xs 107": N_ALPHA_XS,
             "capture": CAPTURE_XS,
             "n,gamma": CAPTURE_XS,
             "xs 102": CAPTURE_XS,
@@ -163,3 +167,10 @@ ERANOS_CHANNELS = {
                    "N,XN": N_XN_XS,
                    "NU": NUBAR_TOTAL,
                    }
+
+
+def eranos_channel(label, isotope=None):
+    """Return the ENDF channel matching an ERANOS perturbation label."""
+    if label == "CAPTURE" and isotope == "B-10":
+        return N_ALPHA_XS
+    return ERANOS_CHANNELS[label]

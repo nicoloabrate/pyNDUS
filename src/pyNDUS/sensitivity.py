@@ -14,10 +14,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 try:
     from ._sensitivity_algebra import SensitivityAlgebraMixin
-    from .channels import ERANOS_CHANNELS, SensitivityChannel
+    from .channels import ERANOS_CHANNELS, SensitivityChannel, eranos_channel
 except ImportError:  # when run as a script
     from _sensitivity_algebra import SensitivityAlgebraMixin
-    from channels import ERANOS_CHANNELS, SensitivityChannel
+    from channels import ERANOS_CHANNELS, SensitivityChannel, eranos_channel
 try:
     import pyNDUS.utils as utils
 except ModuleNotFoundError:  # when run as a script
@@ -313,6 +313,7 @@ class Sensitivity(SensitivityAlgebraMixin):
         zaisapp = zais.append
         perturbations = []
         perturbation_channels = []
+        active_sorted_channels = []
 
         header_pat = "SENSITIVITY COEFFICIENTS"
         param_pat = re.compile(r'\b(\w+)\s+SENSITIVITY\b')
@@ -389,19 +390,25 @@ class Sensitivity(SensitivityAlgebraMixin):
                                 "Unknown ERANOS perturbation column(s): "
                                 f"{unknown}. The structure of the ERANOS "
                                 "output file might have changed!")
-                        perturbation_channels = [
-                            ERANOS_CHANNELS[label] for label in perturbations
-                        ]
-                        idx_MT_sorted = sorted(
-                            range(len(perturbation_channels)),
-                            key=lambda index: perturbation_channels[
-                                index].average_MT)
 
                     if columns is None:
                         num_column = len(
                             perturbations
                         )  # len(perturbations) + 2 - (1 if data_line else 0)
                         columns = -np.ones((num_column, nE))
+                    table_channels = [
+                        eranos_channel(label, isotope=s)
+                        for label in perturbations
+                    ]
+                    for channel in table_channels:
+                        if channel not in perturbation_channels:
+                            perturbation_channels.append(channel)
+                    idx_MT_sorted = sorted(
+                        range(len(table_channels)),
+                        key=lambda index: table_channels[index].average_MT)
+                    active_sorted_channels = [
+                        table_channels[index] for index in idx_MT_sorted
+                    ]
                     iline_data = iline + 1
                     ig = 0
 
@@ -421,7 +428,9 @@ class Sensitivity(SensitivityAlgebraMixin):
                     ig += 1
 
                 if ig == nE:
-                    dict_read[resp][mat_element][s] = columns.copy()
+                    dict_read[resp][mat_element][s] = OrderedDict(
+                        (channel, columns[index, :].copy())
+                        for index, channel in enumerate(active_sorted_channels))
                     ig = 0
 
         try:
@@ -1692,12 +1701,19 @@ class Sensitivity(SensitivityAlgebraMixin):
         for iResp, resp in enumerate(self.responses):
             for mat, iMat in self.materials.items():
                 for zais, iZaid in self.zais.items():
-                    for mt, iMT in self.MTs.items():
-                        if zais in value[resp][mat].keys():
-                            profile = value[resp][mat][zais][iMT, ::-1]
-                            sens[iResp, iMat, iZaid, iMT, :] = profile
-                        else:
+                    isotope_values = value[resp][mat].get(zais)
+                    for channel, iMT in self.MTs.items():
+                        if isotope_values is None:
                             sens[iResp, iMat, iZaid, iMT, :] = dummy
+                        elif isinstance(isotope_values, dict):
+                            profile = isotope_values.get(channel)
+                            if profile is None:
+                                sens[iResp, iMat, iZaid, iMT, :] = dummy
+                            else:
+                                sens[iResp, iMat, iZaid, iMT, :] = profile[::-1]
+                        else:
+                            profile = isotope_values[iMT, ::-1]
+                            sens[iResp, iMat, iZaid, iMT, :] = profile
 
         self._sens = sens
 
@@ -1890,6 +1906,27 @@ class Sensitivity(SensitivityAlgebraMixin):
                 "No sensitivity channels match the requested filters.")
         return selected
 
+    def _resolve_eranos_capture_channel(self, channel, selected_zais):
+        """Resolve ERANOS capture requests whose ENDF MT depends on isotope."""
+        if self.reader != "eranos" or channel is None:
+            return channel
+
+        values = channel if isinstance(channel, list) else [channel]
+        resolved = []
+        changed = False
+        for value in values:
+            candidate = self._coerce_channel(value)
+            if candidate == ERANOS_CHANNELS["CAPTURE"]:
+                changed = True
+                for zais in selected_zais:
+                    eranos_capture = eranos_channel("CAPTURE", isotope=zais)
+                    if eranos_capture not in resolved:
+                        resolved.append(eranos_capture)
+            elif candidate not in resolved:
+                resolved.append(candidate)
+
+        return resolved if changed else channel
+
     def get(self, resp=None, mat=None, MT=None, channel=None, average_MF=None,
             covariance_MF=None, covariance_MT=None, L=None, za=None,
             ace_suffix=None, temperature=None, g=None, group_order='ascending'):
@@ -1965,12 +2002,6 @@ class Sensitivity(SensitivityAlgebraMixin):
             for val in self.materials:
                 iM.append(self.materials[val])
 
-        # --- get channel indexes
-        for selected_channel in self._select_channels(
-                MT=MT, channel=channel, average_MF=average_MF,
-                covariance_MF=covariance_MF, covariance_MT=covariance_MT, L=L):
-            iP.append(self.channels[selected_channel])
-
         # --- get ZA indexes
         if za is not None:
             if isinstance(za, str):
@@ -2000,6 +2031,15 @@ class Sensitivity(SensitivityAlgebraMixin):
         else:
             for k, v in self.zaid.items():
                 iZ.append(v)
+
+        # --- get channel indexes
+        selected_zais = [list(self.zais.keys())[idx] for idx in iZ]
+        effective_channel = self._resolve_eranos_capture_channel(
+            channel, selected_zais)
+        for selected_channel in self._select_channels(
+                MT=MT, channel=effective_channel, average_MF=average_MF,
+                covariance_MF=covariance_MF, covariance_MT=covariance_MT, L=L):
+            iP.append(self.channels[selected_channel])
 
         use_nuclide_instances = ace_suffix is not None or temperature is not None
         selected_zaids = [list(self.zaid.keys())[idx] for idx in iZ]
