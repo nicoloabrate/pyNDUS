@@ -126,6 +126,113 @@ def test_eranos_reader_maps_columns_by_header_label(tmp_path):
         [50 * group for group in range(1, 34)])
 
 
+def test_eranos_reader_maps_b10_capture_to_mt107(tmp_path):
+    """Map ERANOS B-10 CAPTURE sensitivities to MT107 instead of MT102."""
+    rng = np.random.default_rng(20260918)
+
+    def random_columns(offset):
+        return {
+            "capture": rng.normal(offset + 1.0, 0.05, size=33),
+            "fission": rng.normal(offset + 2.0, 0.05, size=33),
+            "elastic": rng.normal(offset + 3.0, 0.05, size=33),
+            "inelastic": rng.normal(offset + 4.0, 0.05, size=33),
+            "nu": rng.normal(offset + 5.0, 0.05, size=33),
+            "n,xn": rng.normal(offset + 6.0, 0.05, size=33),
+        }
+
+    def rows_from_columns(columns):
+        rows = []
+        for index, group in enumerate(range(1, 34)):
+            values = [
+                columns["capture"][index],
+                columns["fission"][index],
+                columns["elastic"][index],
+                columns["inelastic"][index],
+                columns["nu"][index],
+                columns["n,xn"][index],
+            ]
+            rows.append(
+                f"{group:8d} " + " ".join(f"{value:15.8E}"
+                                           for value in values) +
+                f" {sum(values):15.8E}")
+        return "\n".join(rows)
+
+    u235_columns = random_columns(10.0)
+    b10_columns = random_columns(100.0)
+    table_header = (
+        "    GROUP   CAPTURE       FISSION       ELASTIC       INELASTIC     "
+        "NU            N,XN                   SUM\n")
+    path = tmp_path / "case.eranos33"
+    path.write_text(
+        "\n"
+        "                              *  SENSITIVITY COEFFICIENTS  *\n"
+        "             ****   KEFF  SENSITIVITY  ****\n"
+        "\n"
+        " REACTOR\n"
+        "\n"
+        "          ISOTOPE U235\n"
+        "\n"
+        f"{table_header}"
+        f"{rows_from_columns(u235_columns)}\n"
+        "\n"
+        "          ISOTOPE B10\n"
+        "\n"
+        f"{table_header}"
+        f"{rows_from_columns(b10_columns)}\n",
+        encoding="utf-8",
+    )
+
+    sens = Sensitivity(path)
+
+    assert [channel.average_MT
+            for channel in sens.channels] == [2, 4, 16, 18, 102, 107, 452]
+    npt.assert_allclose(
+        sens.get(resp="keff",
+                 mat="REACTOR",
+                 za=922350,
+                 MT=102,
+                 group_order="descending").reshape(-1),
+        u235_columns["capture"])
+    npt.assert_allclose(
+        sens.get(resp="keff",
+                 mat="REACTOR",
+                 za=5010,
+                 MT=107,
+                 group_order="descending").reshape(-1),
+        b10_columns["capture"])
+    assert not np.allclose(u235_columns["capture"], b10_columns["capture"])
+    npt.assert_allclose(
+        sens.get(resp="keff",
+                 mat="REACTOR",
+                 za="B-10",
+                 channel="capture"),
+        sens.get(resp="keff",
+                 mat="REACTOR",
+                 za="B-10",
+                 MT=107))
+    npt.assert_allclose(
+        sens.get(resp="keff",
+                 mat="REACTOR",
+                 za="U-235",
+                 channel="capture"),
+        sens.get(resp="keff",
+                 mat="REACTOR",
+                 za="U-235",
+                 MT=102))
+    npt.assert_allclose(
+        sens.get(resp="keff",
+                 mat="REACTOR",
+                 za=922350,
+                 MT=107).reshape(-1),
+        0.0)
+    npt.assert_allclose(
+        sens.get(resp="keff",
+                 mat="REACTOR",
+                 za=5010,
+                 MT=102).reshape(-1),
+        0.0)
+
+
 def test_get_returns_ascending_order_by_default_and_descending_on_request():
     """Expose ascending profiles by default while keeping a descending view."""
     sens = _make_serpent_sensitivity(avg=[1.0, 2.0, 3.0], rsd=[0.1, 0.2, 0.3])
