@@ -559,6 +559,7 @@ class Sensitivity(SensitivityAlgebraMixin):
             re.IGNORECASE)
         channel_re = re.compile(r"^\s*(\d{4,6}\.\d{2}c)\s+(.+?)\s*$",
                                 re.IGNORECASE)
+        legendre_re = re.compile(r"^\s*legendre\s+p(\d+)\s*$", re.IGNORECASE)
         row_re = re.compile(
             r"^\s*([+-]?\d+\.\d+E[+-]\d+)\s+([+-]?\d+\.\d+E[+-]\d+)\s+"
             r"([+-]?\d+\.\d+E[+-]\d+)\s+([+-]?\d+(?:\.\d+)?(?:E[+-]\d+)?)\s*$",
@@ -649,10 +650,11 @@ class Sensitivity(SensitivityAlgebraMixin):
                 temperature = self.mcnp_ace_temperatures.get(ace_suffix)
                 instance = SensitivityNuclideInstance(zaid, ace_suffix,
                                                       temperature)
-                channel = self._coerce_channel(channel_match.group(2))
-                lower, upper, sens, rsd, next_i = self._read_mcnp_channel_rows(
-                    lines, i + 1, row_re)
-                if sens:
+                channel_label = channel_match.group(2)
+                channel_rows, next_i = self._read_mcnp_channel_blocks(
+                    channel_label, lines, i + 1, row_re, legendre_re,
+                    (channel_re, section_re, profile_re, spatial_re))
+                for channel, lower, upper, sens, rsd in channel_rows:
                     # --- register axes and check that all tables share one grid
                     if zaid not in zaids:
                         zaids.append(zaid)
@@ -737,6 +739,77 @@ class Sensitivity(SensitivityAlgebraMixin):
                 break
             i += 1
         return lower, upper, sens, rsd, i
+
+    @staticmethod
+    def _is_mcnp_law_label(label):
+        """Return whether an MCNP channel label contains Legendre sub-blocks."""
+        return " law" in f" {' '.join(str(label).lower().split())}"
+
+    @classmethod
+    def _mcnp_legendre_channel(cls, label, moment):
+        """Return the channel for one MCNP ``... law`` Legendre moment."""
+        normalized = " ".join(str(label).split()).lower()
+        try:
+            return SensitivityChannel.from_alias(f"{normalized} legendre p{moment}")
+        except ValueError:
+            pass
+
+        if normalized.startswith("elastic"):
+            mt = 2
+        elif normalized.startswith("inelastic"):
+            mt = 4
+        elif normalized.startswith(("scatter", "scattering")):
+            mt = 1
+        else:
+            return SensitivityChannel(average_MF=4, average_MT=None, covariance_MF=34,
+                                      covariance_MT=None, L=moment,
+                                      name=f"{normalized} Legendre moment {moment}")
+
+        covariance_mt = 251 if mt == 2 and moment == 1 else mt
+        aliases = (2, ) if mt == 2 and moment == 1 else ()
+        return SensitivityChannel(average_MF=4, average_MT=mt, covariance_MF=34,
+                                  covariance_MT=covariance_mt, L=moment,
+                                  name=f"{normalized} Legendre moment {moment}",
+                                  covariance_MT_aliases=aliases)
+
+    @classmethod
+    def _read_mcnp_channel_blocks(cls, label, lines, start, row_re,
+                                  legendre_re, stop_res):
+        """Read standard MCNP rows or all Legendre sub-blocks of a law table."""
+        if not cls._is_mcnp_law_label(label):
+            lower, upper, sens, rsd, next_i = cls._read_mcnp_channel_rows(
+                lines, start, row_re)
+            channel = cls._coerce_channel(label)
+            if not sens:
+                return [], next_i
+            return [(channel, lower, upper, sens, rsd)], next_i
+
+        blocks = []
+        i = start
+        while i < len(lines):
+            line = lines[i]
+            if any(pattern.match(line) for pattern in stop_res):
+                break
+            legendre_match = legendre_re.match(line)
+            if legendre_match:
+                moment = int(legendre_match.group(1))
+                lower, upper, sens, rsd, next_i = cls._read_mcnp_channel_rows(
+                    lines, i + 1, row_re)
+                if sens:
+                    blocks.append((cls._mcnp_legendre_channel(label, moment),
+                                   lower, upper, sens, rsd))
+                i = next_i
+                continue
+            i += 1
+
+        if blocks:
+            return blocks, i
+
+        lower, upper, sens, rsd, next_i = cls._read_mcnp_channel_rows(
+            lines, start, row_re)
+        if not sens:
+            return [], next_i
+        return [(cls._coerce_channel(label), lower, upper, sens, rsd)], next_i
 
     @staticmethod
     def _combine_mcnp_channel_data(existing, values, rel_unc):
@@ -1260,9 +1333,6 @@ class Sensitivity(SensitivityAlgebraMixin):
             return SensitivityChannel.from_endf(average_MF=3, average_MT=mt)
         if isinstance(value, str):
             label = " ".join(value.split()).lower()
-            if "xs" in label:
-                mt = 1 if "total" in label else int(label.split()[1])
-                return SensitivityChannel.from_endf(average_MF=3, average_MT=mt)
             try:
                 return SensitivityChannel.from_alias(label)
             except ValueError:
@@ -1908,7 +1978,7 @@ class Sensitivity(SensitivityAlgebraMixin):
 
     def _resolve_eranos_capture_channel(self, channel, selected_zais):
         """Resolve ERANOS capture requests whose ENDF MT depends on isotope."""
-        if self.reader != "eranos" or channel is None:
+        if getattr(self, "_reader", None) != "eranos" or channel is None:
             return channel
 
         values = channel if isinstance(channel, list) else [channel]
