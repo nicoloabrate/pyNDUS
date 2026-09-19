@@ -20,6 +20,83 @@ def _example(name):
     return path
 
 
+@pytest.mark.parametrize(
+    "label, mt",
+    [
+        ("total", 1),
+        ("elastic", 2),
+        ("inelastic", 4),
+        ("n,2nd", 11),
+        ("n,2n", 16),
+        ("n,3n", 17),
+        ("fission", 18),
+        ("n,f", 19),
+        ("(First-Chance Fission)", 19),
+        ("n,2nf", 20),
+        ("n,nalpha", 22),
+        ("n,n3alpha", 23),
+        ("n,2nalpha", 24),
+        ("n,np", 28),
+        ("n,n2alpha", 29),
+        ("n,2n2alpha", 30),
+        ("n,nd", 32),
+        ("n,nt", 33),
+        ("n,n3he", 34),
+        ("n,nd2alpha", 35),
+        ("n,nt2alpha", 36),
+        ("n,4n", 37),
+        ("n,3nf", 38),
+        ("n,2np", 41),
+        ("n,3np", 42),
+        ("n,n2p", 44),
+        ("n,npalpha", 45),
+        ("n,gamma", 102),
+        ("n,p", 103),
+        ("n,d", 104),
+        ("n,t", 105),
+        ("n,3he", 106),
+        ("n,alpha", 107),
+    ],
+)
+def test_mcnp_reaction_aliases_resolve_to_endf_mt(label, mt):
+    """Resolve MCNP reaction labels to ENDF-6 MT cross-section channels."""
+    channel = SensitivityChannel.from_alias(label)
+
+    assert channel.average_MF == 3
+    assert channel.average_MT == mt
+    assert channel.covariance_MF == 33
+    assert channel.covariance_MT == mt
+
+
+def test_mcnp_special_aliases_resolve_to_endf_channels():
+    """Resolve non-MF33 MCNP aliases without losing their covariance side."""
+    assert SensitivityChannel.from_alias("total nu").average_MT == 452
+    assert SensitivityChannel.from_alias("prompt nu").average_MT == 456
+    assert SensitivityChannel.from_alias("delayed nu").average_MT == 455
+    assert SensitivityChannel.from_alias("fission chi").average_MT is None
+    assert SensitivityChannel.from_alias("prompt chi").covariance_MF == 35
+    assert SensitivityChannel.from_alias("delayed chi").covariance_MT == 455
+
+
+def test_mcnp_aliases_do_not_rename_canonical_xs_channels():
+    """Keep historical Serpent/ERANOS channel names despite MCNP aliases."""
+    assert SensitivityChannel.from_alias("n,gamma").name == "capture"
+    assert SensitivityChannel.from_alias("n,2n").name == "n,xn"
+    assert SensitivityChannel.from_alias("capture").name == "capture"
+    assert SensitivityChannel.from_alias("n,xn").name == "n,xn"
+
+
+@pytest.mark.parametrize("label", ["mt 18 xs", "xs mt 18", "xs 18"])
+def test_serpent_xs_labels_resolve_to_endf_mt(label):
+    """Resolve the two Serpent cross-section label orderings."""
+    channel = SensitivityChannel.from_alias(label)
+
+    assert channel.average_MF == 3
+    assert channel.average_MT == 18
+    assert channel.covariance_MF == 33
+    assert channel.covariance_MT == 18
+
+
 def test_mcnp_reader_fullcore_profile():
     """Read a one-region MCNP sensitivity output."""
     sens = Sensitivity(_example("sens_out_fullcore.mcnp"))
@@ -42,6 +119,54 @@ def test_mcnp_reader_fullcore_profile():
                         group_order="ascending")
     np.testing.assert_allclose(avg.ravel()[1], -3.1268e-07)
     np.testing.assert_allclose(rsd.ravel()[1], 0.6897)
+
+
+def test_mcnp_reader_splits_law_legendre_moments(tmp_path):
+    """Read each MCNP law Legendre moment as a distinct channel."""
+    path = tmp_path / "legendre_law.mcnp"
+    path.write_text("""
+ nuclear data keff sensitivity coefficients
+      sensitivity profile      1
+
+         94239.00c elastic law
+
+        incident energy range:   0.0000E+00  1.0000E+36 MeV
+
+                   legendre p1
+
+                outgoing
+            energy range (MeV)         sensitivity   rel. unc.
+
+        1.0000E-11  1.0000E-07          1.0000E-01      0.1000
+
+                   legendre p2
+
+                outgoing
+            energy range (MeV)         sensitivity   rel. unc.
+
+        1.0000E-11  1.0000E-07          2.0000E-01      0.2000
+
+         94239.00c n,2nf
+
+            energy range (MeV)         sensitivity   rel. unc.
+
+        1.0000E-11  1.0000E-07          3.0000E-01      0.3000
+        """)
+
+    sens = Sensitivity(path)
+
+    p1 = SensitivityChannel.from_alias("elastic law legendre p1")
+    p2 = SensitivityChannel.from_alias("elastic law legendre p2")
+    n2nf = SensitivityChannel.from_alias("n,2nf")
+
+    assert list(sens.channels) == [p1, p2, n2nf]
+    avg, rsd = sens.get(resp="keff",
+                        mat="profile 1",
+                        channel=[p1, p2, n2nf],
+                        za=942390,
+                        group_order="ascending")
+    np.testing.assert_allclose(avg.ravel(), [0.1, 0.2, 0.3])
+    np.testing.assert_allclose(rsd.ravel(), [0.1, 0.2, 0.3])
 
 
 def test_mcnp_reader_collapses_bare_profiles(tmp_path):

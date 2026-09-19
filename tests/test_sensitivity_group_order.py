@@ -17,7 +17,7 @@ def _make_serpent_sensitivity(avg, rsd=None, group_structure=None):
     sens.materials = ["fuel"]
     sens.zaid = [922350]
     sens.zais = sens.zaid.keys()
-    sens.MTs = ["xs 18"]
+    sens.MTs = ["mt 18 xs"]
     if group_structure is None:
         group_structure = [1.0, 2.0, 3.0, 4.0]
 
