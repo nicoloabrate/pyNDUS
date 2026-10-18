@@ -1,12 +1,18 @@
 """Tests for Sandwich uncertainty propagation and missing covariance policies."""
 
+import inspect
+
 import pytest
 import numpy as np
 import numpy.testing as npt
 from uncertainties import unumpy as unp
 
 import pyNDUS.sandwich as sandwich_module
-from pyNDUS.sandwich import Sandwich
+from pyNDUS.sandwich import (
+    NonPositiveSemidefiniteError,
+    NonPositiveSemidefiniteWarning,
+    Sandwich,
+)
 from pyNDUS.sensitivity import Sensitivity
 from pyNDUS.channels import SensitivityChannel
 
@@ -443,10 +449,10 @@ def test_default_mt_selection_excludes_total_cross_section(monkeypatch):
         {
             ("keff", "fuel", za, 1): np.array([2.0, 0.0]),
             ("keff", "fuel", za, 18): np.array([1.0, 0.0]),
-        },
-    )
+        }, )
     covmat = {
-        za: FakeCovZAForInit({
+        za:
+        FakeCovZAForInit({
             "errorr33": {
                 (1, 1): np.diag([100.0, 0.0]),
                 (18, 18): np.diag([4.0, 0.0]),
@@ -465,7 +471,7 @@ def test_default_mt_selection_excludes_total_cross_section(monkeypatch):
     assert default.MFs2MTs == {za: {"errorr33": [18]}}
     npt.assert_allclose(
         default.uncertainty_standard_deviation.loc[("keff", "fuel"),
-                                                    "variance"],
+                                                   "variance"],
         4.0,
     )
 
@@ -481,12 +487,13 @@ def test_default_mt_selection_excludes_total_cross_section(monkeypatch):
     assert explicit.MFs2MTs == {za: {"errorr33": [1]}}
     npt.assert_allclose(
         explicit.uncertainty_standard_deviation.loc[("keff", "fuel"),
-                                                     "variance"],
+                                                    "variance"],
         400.0,
     )
 
 
-def test_serpent_total_zaid_without_covariance_is_ignored_by_sandwich(monkeypatch):
+def test_serpent_total_zaid_without_covariance_is_ignored_by_sandwich(
+        monkeypatch):
     """Retain ZAID=0 in sensitivities without treating it as a covariance ZAID."""
     monkeypatch.setattr(sandwich_module, "Sensitivity", FakeSensitivityForInit)
     monkeypatch.setattr(sandwich_module, "Covariance", FakeCovZAForInit)
@@ -497,11 +504,13 @@ def test_serpent_total_zaid_without_covariance_is_ignored_by_sandwich(monkeypatc
         {
             ("keff", "fuel", total_za, 18): np.array([100.0, 0.0]),
             ("keff", "fuel", physical_za, 18): np.array([1.0, 0.0]),
-        },
-    )
+        }, )
     covmat = {
-        physical_za: FakeCovZAForInit({
-            "errorr33": {(18, 18): np.diag([4.0, 0.0])},
+        physical_za:
+        FakeCovZAForInit({
+            "errorr33": {
+                (18, 18): np.diag([4.0, 0.0])
+            },
         })
     }
 
@@ -516,8 +525,7 @@ def test_serpent_total_zaid_without_covariance_is_ignored_by_sandwich(monkeypatc
     assert total_za not in sand.za
     assert list(sand.za) == [physical_za]
     npt.assert_allclose(
-        sand.uncertainty_standard_deviation.loc[("keff", "fuel"),
-                                                 "variance"],
+        sand.uncertainty_standard_deviation.loc[("keff", "fuel"), "variance"],
         4.0,
     )
 
@@ -1101,3 +1109,276 @@ def test_uncertainty_missing_sensitivity_returns_zero():
 
     got = _get_df_value(df_matrix, "keff", "fuel", za_label, mt, mt)
     npt.assert_allclose(got, 0.0, rtol=0.0, atol=0.0)
+
+
+def _indefinite_two_mt_case(material="fuel"):
+    """Return a two-group, two-MT covariance with negative eigenvalues."""
+    za = 922380
+    mf = "errorr33"
+    mt1, mt2 = 2, 18
+    sensitivities = FakeSensitivity(
+        {
+            ("keff", material, za, mt1): np.array([1.0, 0.0]),
+            ("keff", material, za, mt2): np.array([0.0, 0.0]),
+        },
+        n_groups=2,
+        reader="serpent",
+    )
+    blocks = {
+        (mt1, mt1): np.eye(2),
+        (mt1, mt2): 2.0 * np.eye(2),
+        (mt2, mt1): 2.0 * np.eye(2),
+        (mt2, mt2): np.eye(2),
+    }
+    covariance = {za: FakeCovZA({mf: blocks})}
+    mapping = {za: {mf: [mt1, mt2]}}
+    return sensitivities, covariance, mapping, {za: "U238"}
+
+
+def test_non_psd_warn_preserves_covariance_and_exposes_modal_diagnostics():
+    """Warn once, retain the raw result, and close every modal MT split."""
+    sens, covmat, mapping, za_dict = _indefinite_two_mt_case()
+
+    with pytest.warns(NonPositiveSemidefiniteWarning) as caught:
+        result, _ = Sandwich.compute_uncertainty(sens,
+                                                 covmat, ["keff"], ["fuel"],
+                                                 mapping,
+                                                 za_dict,
+                                                 sens_MC=False,
+                                                 non_psd_policy="warn")
+
+    assert len(caught) == 1
+    npt.assert_allclose(result.to_numpy(dtype=float).sum(), 1.0)
+    diagnostics = result.attrs["covariance_diagnostics"]
+    assert diagnostics.loc[("U238", 33), "negative_eigenvalues"] == 2
+    assert not diagnostics.loc[("U238", 33), "repaired"]
+
+    modes = result.attrs["eigenmodes"]
+    mt_modes = result.attrs["eigenmode_mts"]
+    npt.assert_allclose(modes["raw_variance"].sum(), 1.0)
+    npt.assert_allclose(modes["used_variance"].sum(), 1.0)
+    attributed = mt_modes["raw_attributed_variance"].groupby(
+        level=["RESPONSE", "MATERIAL", "ZA", "MF", "EIGENMODE"]).sum()
+    npt.assert_allclose(
+        np.asarray(attributed, dtype=float),
+        np.asarray(modes["raw_variance"], dtype=float),
+    )
+
+
+def test_non_psd_raise_identifies_the_selected_covariance():
+    """Reject a non-PSD selected ZA/MF matrix before propagation."""
+    sens, covmat, mapping, za_dict = _indefinite_two_mt_case()
+
+    with pytest.raises(NonPositiveSemidefiniteError,
+                       match=r"ZA=922380, MF=33, MTs=\(2, 18\)"):
+        Sandwich.compute_uncertainty(sens,
+                                     covmat, ["keff"], ["fuel"],
+                                     mapping,
+                                     za_dict,
+                                     sens_MC=False,
+                                     non_psd_policy="raise")
+
+
+def test_non_psd_default_policy_is_raise():
+    """Use the fail-safe raise policy by default in every public entry point."""
+    assert inspect.signature(Sandwich).parameters[
+        "non_psd_policy"].default == "raise"
+    assert inspect.signature(Sandwich.compute_uncertainty).parameters[
+        "non_psd_policy"].default == "raise"
+    assert inspect.signature(Sandwich.compute_representativity).parameters[
+        "non_psd_policy"].default == "raise"
+    assert inspect.signature(Sandwich).parameters[
+        "neg_eigval_policy"].default == "zero"
+    assert inspect.signature(Sandwich.compute_uncertainty).parameters[
+        "neg_eigval_policy"].default == "zero"
+    assert inspect.signature(Sandwich.compute_representativity).parameters[
+        "neg_eigval_policy"].default == "zero"
+
+    sens, covmat, mapping, za_dict = _indefinite_two_mt_case()
+    with pytest.raises(NonPositiveSemidefiniteError):
+        Sandwich.compute_uncertainty(
+            sens,
+            covmat, ["keff"], ["fuel"],
+            mapping,
+            za_dict,
+            sens_MC=False)
+
+
+def test_non_psd_eigen_decomp_clips_modes_and_closes_to_uncertainty():
+    """Propagate the reconstructed PSD matrix and retain raw diagnostics."""
+    sens, covmat, mapping, za_dict = _indefinite_two_mt_case()
+
+    with pytest.warns(NonPositiveSemidefiniteWarning) as caught:
+        result, _ = Sandwich.compute_uncertainty(sens,
+                                                 covmat, ["keff"], ["fuel"],
+                                                 mapping,
+                                                 za_dict,
+                                                 sens_MC=False,
+                                                 non_psd_policy="eigen_decomp")
+
+    assert len(caught) == 1
+    # C+ = 1.5 * [[1, 1], [1, 1]] and S = [1, 0].
+    npt.assert_allclose(result.to_numpy(dtype=float).sum(), 1.5)
+    modes = result.attrs["eigenmodes"]
+    assert modes["negative"].sum() == 2
+    assert modes["set_to_zero"].sum() == 2
+    assert modes["absolute_value_applied"].sum() == 0
+    npt.assert_allclose(modes["raw_variance"].sum(), 1.0)
+    npt.assert_allclose(modes["used_variance"].sum(), 1.5)
+    diagnostics = result.attrs["covariance_diagnostics"]
+    assert diagnostics.loc[("U238", 33),
+                           "negative_eigenvalues_set_to_zero"] == 2
+    assert diagnostics.loc[("U238", 33), "absolute_eigenvalues"] == 0
+    assert diagnostics.loc[("U238", 33),
+                           "neg_eigval_policy"] == "zero"
+
+    mt_modes = result.attrs["eigenmode_mts"]
+    attributed = mt_modes["used_attributed_variance"].groupby(
+        level=["RESPONSE", "MATERIAL", "ZA", "MF", "EIGENMODE"]).sum()
+    npt.assert_allclose(
+        np.asarray(attributed, dtype=float),
+        np.asarray(modes["used_variance"], dtype=float),
+    )
+
+
+def test_non_psd_eigen_decomp_absolute_values_modes_and_closes_to_uncertainty():
+    """Propagate absolute eigenvalues while retaining raw negative diagnostics."""
+    sens, covmat, mapping, za_dict = _indefinite_two_mt_case()
+
+    with pytest.warns(NonPositiveSemidefiniteWarning,
+                      match="replaced by their absolute values") as caught:
+        result, _ = Sandwich.compute_uncertainty(
+            sens,
+            covmat, ["keff"], ["fuel"],
+            mapping,
+            za_dict,
+            sens_MC=False,
+            non_psd_policy="eigen_decomp",
+            neg_eigval_policy="absolute")
+
+    assert len(caught) == 1
+    # Q @ abs(Lambda) @ Q.T has diagonal 2 and S = [1, 0].
+    npt.assert_allclose(result.to_numpy(dtype=float).sum(), 2.0)
+    modes = result.attrs["eigenmodes"]
+    negative_modes = modes.loc[modes["negative"]]
+    assert modes["set_to_zero"].sum() == 0
+    assert modes["absolute_value_applied"].sum() == 2
+    npt.assert_allclose(negative_modes["used_eigenvalue"],
+                        -negative_modes["eigenvalue"])
+    npt.assert_allclose(negative_modes["used_variance"],
+                        -negative_modes["raw_variance"])
+    npt.assert_allclose(modes["raw_variance"].sum(), 1.0)
+    npt.assert_allclose(modes["used_variance"].sum(), 2.0)
+    diagnostics = result.attrs["covariance_diagnostics"]
+    assert diagnostics.loc[("U238", 33),
+                           "negative_eigenvalues_set_to_zero"] == 0
+    assert diagnostics.loc[("U238", 33), "absolute_eigenvalues"] == 2
+    assert diagnostics.loc[("U238", 33),
+                           "neg_eigval_policy"] == "absolute"
+
+    mt_modes = result.attrs["eigenmode_mts"]
+    attributed = mt_modes["used_attributed_variance"].groupby(
+        level=["RESPONSE", "MATERIAL", "ZA", "MF", "EIGENMODE"]).sum()
+    npt.assert_allclose(
+        np.asarray(attributed, dtype=float),
+        np.asarray(modes["used_variance"], dtype=float),
+    )
+
+
+@pytest.mark.parametrize(("neg_eigval_policy", "expected"),
+                         [("zero", 1.0), ("absolute", 0.5)])
+def test_representativity_eigen_decomp_reuses_psd_matrix_in_all_terms(
+        neg_eigval_policy, expected):
+    """Use one repaired matrix for numerator and both denominator variances."""
+    sens_a, covmat, mapping, za_dict = _indefinite_two_mt_case(
+        material="total")
+    za = next(iter(za_dict))
+    sens_b = FakeSensitivity(
+        {
+            ("keff", "total", za, 2): np.array([0.0, 0.0]),
+            ("keff", "total", za, 18): np.array([1.0, 0.0]),
+        },
+        n_groups=2,
+        reader="serpent",
+    )
+
+    with pytest.warns(NonPositiveSemidefiniteWarning) as caught:
+        result, _ = Sandwich.compute_representativity(
+            sens_a,
+            sens_b,
+            covmat, ["keff"],
+            mapping,
+            za_dict,
+            sens_MC=False,
+            non_psd_policy="eigen_decomp",
+            neg_eigval_policy=neg_eigval_policy)
+
+    # Preparing once also ensures that one diagnostic warning is emitted.
+    assert len(caught) == 1
+    npt.assert_allclose(result.to_numpy(dtype=float).sum(), expected)
+    diagnostics = result.attrs["covariance_diagnostics"]
+    assert diagnostics.loc[("U238", 33), "repaired"]
+
+
+def test_invalid_non_psd_policy_is_rejected():
+    """Reject unknown non-PSD policies explicitly."""
+    sens, covmat, mapping, za_dict = _indefinite_two_mt_case()
+
+    with pytest.raises(ValueError, match="non_psd_policy"):
+        Sandwich.compute_uncertainty(sens,
+                                     covmat, ["keff"], ["fuel"],
+                                     mapping,
+                                     za_dict,
+                                     sens_MC=False,
+                                     non_psd_policy="clip")
+
+
+def test_invalid_neg_eigval_policy_is_rejected():
+    """Reject unknown negative-eigenvalue replacements explicitly."""
+    sens, covmat, mapping, za_dict = _indefinite_two_mt_case()
+
+    with pytest.raises(ValueError, match="neg_eigval_policy"):
+        Sandwich.compute_uncertainty(
+            sens,
+            covmat, ["keff"], ["fuel"],
+            mapping,
+            za_dict,
+            sens_MC=False,
+            non_psd_policy="eigen_decomp",
+            neg_eigval_policy="reflect")
+
+
+def test_constructor_exposes_eigen_decomp_diagnostics(monkeypatch):
+    """Expose PSD and modal diagnostics on a regular Sandwich result."""
+    monkeypatch.setattr(sandwich_module, "Sensitivity",
+                        FakeSensitivityForInit)
+    monkeypatch.setattr(sandwich_module, "Covariance", FakeCovZAForInit)
+    sens, covmat, mapping, _ = _indefinite_two_mt_case()
+    za = next(iter(mapping))
+    sens = FakeSensitivityForInit(sens._data, n_groups=2, reader="serpent")
+    covmat = {
+        za: FakeCovZAForInit(covmat[za]._mats_by_mf),
+    }
+
+    with pytest.warns(NonPositiveSemidefiniteWarning):
+        result = Sandwich(
+            sens,
+            covmat=covmat,
+            list_za=[za],
+            list_MFs=[33],
+            list_MTs=[2, 18],
+            non_psd_policy="eigen_decomp",
+            neg_eigval_policy="absolute",
+        )
+
+    npt.assert_allclose(
+        result.uncertainty_standard_deviation.loc[("keff", "fuel"),
+                                                  "variance"],
+        2.0,
+    )
+    assert result.non_psd_policy == "eigen_decomp"
+    assert result.neg_eigval_policy == "absolute"
+    assert result.covariance_diagnostics.loc[(result.za[za], 33), "repaired"]
+    assert result.uncertainty_eigenmodes["set_to_zero"].sum() == 0
+    assert result.uncertainty_eigenmodes["absolute_value_applied"].sum() == 2
+    assert not result.uncertainty_eigenmode_mts.empty

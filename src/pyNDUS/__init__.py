@@ -1,13 +1,26 @@
 """Public package interface for pyNDUS."""
 
-from .sandwich import Sandwich, SandwichError
+from .sandwich import (
+    NonPositiveSemidefiniteError,
+    NonPositiveSemidefiniteWarning,
+    Sandwich,
+    SandwichError,
+)
 
 __all__ = [
-            "Covariance", "CovarianceError", "Sensitivity", "SensitivityError",
-            "SensitivityAlgebraError", "SensitivityChannel", "Sandwich",
-            "SandwichError", "SensitivitySpatialZone",
-            "SensitivityNuclideInstance",
-            ]
+    "Covariance",
+    "CovarianceError",
+    "Sensitivity",
+    "SensitivityError",
+    "SensitivityAlgebraError",
+    "SensitivityChannel",
+    "Sandwich",
+    "SandwichError",
+    "NonPositiveSemidefiniteError",
+    "NonPositiveSemidefiniteWarning",
+    "SensitivitySpatialZone",
+    "SensitivityNuclideInstance",
+]
 
 
 def __getattr__(name):
@@ -49,5 +62,11 @@ def __getattr__(name):
 
     if name == "SandwichError":
         return SandwichError
+
+    if name == "NonPositiveSemidefiniteError":
+        return NonPositiveSemidefiniteError
+
+    if name == "NonPositiveSemidefiniteWarning":
+        return NonPositiveSemidefiniteWarning
 
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

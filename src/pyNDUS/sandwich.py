@@ -8,6 +8,7 @@ description: propagate sensitivity profiles and covariance matrices with
 """
 import numpy as np
 import pandas as pd
+import warnings
 from uncertainties import ufloat
 from uncertainties import unumpy as unp
 from collections import OrderedDict
@@ -447,6 +448,20 @@ class Sandwich:
         the raw contributions :math:`S_i^T C_{ij} S_j`; ``"signed_sqrt"``
         returns ``sign(q) * sqrt(abs(q))`` for each contribution ``q``.
         The default is ``"variance"``.
+    non_psd_policy : {"warn", "raise", "eigen_decomp"}, optional
+        Treatment of ZA/MF covariance matrix with eigenvalues below
+        the numerical Positive Semi-Definite (PSD) tolerance. ``"warn"`` preserves the input matrix,
+        ``"raise"`` stops the calculation, and ``"eigen_decomp"`` replaces
+        negative eigenvalues according to ``neg_eigval_policy``
+        before propagation. The default is ``"raise"``.
+    non_psd_rtol, non_psd_atol : float, optional
+        Relative and absolute tolerances used to distinguish a significant
+        negative eigenvalue from numerical round-off. A mode is diagnosed as
+        negative when ``eigenvalue < -(atol + rtol * spectral_radius)``.
+    neg_eigval_policy : {"zero", "absolute"}, optional
+        Treatment of negative eigenvalues under the ``"eigen_decomp"`` policy.
+        The default ``"zero"`` sets them to zero; ``"absolute"`` uses their
+        absolute values.
     representativity : bool, optional
         If True, compute representativity between ``sens`` and ``sens2``.
     similarity : bool, optional
@@ -466,6 +481,15 @@ class Sandwich:
         Total variance and standard deviation for each response/material,
         obtained by summing all selected ZA/MF/MT contributions before taking
         the square root.
+    uncertainty_eigenmodes : pandas.DataFrame
+        Variance contribution of every covariance eigenmode. Eigenmodes are
+        computed separately for each selected ZA/MF block.
+    uncertainty_eigenmode_mts : pandas.DataFrame
+        MT-wise contribution of every eigenmode. Half of each unordered MT cross
+        term is assigned to either MT cross-term (e.g., MT2-MT4), so that the sum
+        of all MT contributions equals the eigenmode variance.
+    covariance_diagnostics : pandas.DataFrame
+        PSD diagnostics for every available selected ZA/MF covariance block.
     representativity_total : pandas.Series
         Total representativity coefficient for each response, obtained by
         summing the normalized ZA/MF/MT-pair contributions in
@@ -483,7 +507,9 @@ class Sandwich:
                  list_resp=None, list_mat=None, list_za=None, list_MTs=None,
                  list_MFs=None, sum_MFs=False, include_MF=False,
                  representativity=False, similarity=False,
-                 uncertainty_output="variance"):
+                 uncertainty_output="variance", non_psd_policy="raise",
+                 non_psd_rtol=1e-10, non_psd_atol=1e-12,
+                 neg_eigval_policy="zero"):
         """
         Initialize a sandwich-formula calculation and store the result.
 
@@ -536,6 +562,14 @@ class Sandwich:
                 "'uncertainty_output' applies only to uncertainty "
                 "calculations.")
         self.uncertainty_output = uncertainty_output
+
+        non_psd_policy, non_psd_rtol, non_psd_atol, neg_eigval_policy = (
+            self._validate_non_psd_options(non_psd_policy, non_psd_rtol,
+                                           non_psd_atol, neg_eigval_policy))
+        self.non_psd_policy = non_psd_policy
+        self.non_psd_rtol = non_psd_rtol
+        self.non_psd_atol = non_psd_atol
+        self.neg_eigval_policy = neg_eigval_policy
 
         if not isinstance(sens, Sensitivity):
             raise ValueError(
@@ -869,10 +903,16 @@ class Sandwich:
             representativity, dict_map = self.compute_representativity(
                 sens, sens2, covmat, list_resp, map_MF2MT, self.za,
                 self.sens_MC, sigma=self.sigma, sum_MFs=sum_MFs,
-                include_MF=include_MF)
+                include_MF=include_MF,
+                non_psd_policy=non_psd_policy,
+                non_psd_rtol=non_psd_rtol,
+                non_psd_atol=non_psd_atol,
+                neg_eigval_policy=neg_eigval_policy)
             self.representativity = representativity
             self.representativity_table = representativity.attrs.get("table")
             self.representativity_by_mf = representativity.attrs.get("by_mf")
+            self.covariance_diagnostics = representativity.attrs.get(
+                "covariance_diagnostics")
             self.dict_map = dict_map
         elif similarity:
             similarity, dict_map = self.compute_similarity(
@@ -886,7 +926,11 @@ class Sandwich:
             uncertainty_variance, dict_map = self.compute_uncertainty(
                 sens, covmat, list_resp, list_mat, map_MF2MT, self.za,
                 self.sens_MC, sigma=self.sigma, sum_MFs=sum_MFs,
-                include_MF=include_MF)
+                include_MF=include_MF,
+                non_psd_policy=non_psd_policy,
+                non_psd_rtol=non_psd_rtol,
+                non_psd_atol=non_psd_atol,
+                neg_eigval_policy=neg_eigval_policy)
             uncertainty_signed_sqrt = self._signed_sqrt_uncertainty(
                 uncertainty_variance)
             self.uncertainty_variance = uncertainty_variance
@@ -901,6 +945,9 @@ class Sandwich:
                 uncertainty_signed_sqrt.attrs.get("by_mf"))
             self.uncertainty_standard_deviation = (
                 self._standard_deviation_from_variance(uncertainty_variance))
+            self.uncertainty_eigenmodes = uncertainty_variance.attrs.get("eigenmodes")
+            self.uncertainty_eigenmode_mts = uncertainty_variance.attrs.get("eigenmode_mts")
+            self.covariance_diagnostics = uncertainty_variance.attrs.get("covariance_diagnostics")
 
             if uncertainty_output == "signed_sqrt":
                 uncertainty = uncertainty_signed_sqrt
@@ -1109,6 +1156,321 @@ class Sandwich:
             return var * np.eye(n_groups)
         else:
             return float(corr) * var * np.eye(n_groups)
+
+    @staticmethod
+    def _validate_non_psd_options(policy, rtol, atol, neg_eigval_policy="zero"):
+        """Validate and normalize the non-PSD covariance policy options."""
+
+        if not isinstance(policy, str):
+            raise ValueError("'non_psd_policy' must be 'warn', 'raise', or "
+                             f"'eigen_decomp', not {type(policy)}")
+
+        policy = policy.lower()
+        allowed = {"warn", "raise", "eigen_decomp"}
+
+        if policy not in allowed:
+            raise ValueError("'non_psd_policy' must be 'warn', 'raise', or "
+                             f"'eigen_decomp', not {policy!r}")
+
+        if not isinstance(neg_eigval_policy, str):
+            raise ValueError("'neg_eigval_policy' must be 'zero' or "
+                             f"'absolute', not {type(neg_eigval_policy)}")
+
+        neg_eigval_policy = neg_eigval_policy.lower()
+
+        if neg_eigval_policy not in {"zero", "absolute"}:
+            raise ValueError("'neg_eigval_policy' must be 'zero' or "
+                             f"'absolute', not {neg_eigval_policy!r}")
+
+        normalized = []
+        for name, value in (("non_psd_rtol", rtol), ("non_psd_atol", atol)):
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                raise ValueError(f"'{name}' must be >0")
+            if not np.isfinite(value) or value < 0:
+                raise ValueError(f"'{name}' must be >0")
+
+            normalized.append(value)
+
+        return policy, normalized[0], normalized[1], neg_eigval_policy
+
+    @staticmethod
+    def _prepare_covariance_blocks(covmat, map_MF2MT, n_groups, non_psd_policy="raise",
+                                    non_psd_rtol=1e-10, non_psd_atol=1e-12,
+                                    neg_eigval_policy="zero"):
+        """
+        Assemble, diagnose, and optionally repair selected ZA/MF matrices.
+
+        PSD is assessed on ``0.5 * (C + C.T)`` because positive
+        semidefiniteness is defined for a symmetric covariance matrix. The raw
+        matrix is retained by the ``warn`` policy. ``eigen_decomp`` uses the
+        symmetrized eigendecomposition and replaces every negative eigenvalue
+        according to ``neg_eigval_policy``.
+        """
+        policy, rtol, atol, neg_eigval_policy = Sandwich._validate_non_psd_options(
+            non_psd_policy, non_psd_rtol, non_psd_atol, neg_eigval_policy)
+        cov_block = {}
+
+        for za, mf_map in map_MF2MT.items():
+            for mf, selected_mts in mf_map.items():
+                mts = list(selected_mts)
+                if (not mts or za not in covmat or mf not in covmat[za].rcov):
+                    continue
+
+                rows = []
+                for mt_row in mts:
+                    row = []
+                    for mt_col in mts:
+                        rowcol = covmat[za].get((mt_row, mt_col), MF=mf, to_numpy=True)
+                        block = np.asarray(rowcol, dtype=float)
+                        expected_shape = (n_groups, n_groups)
+                        if block.shape != expected_shape:
+                            raise SandwichError(
+                                "Covariance block has incompatible shape for "
+                                f"ZA={za}, MF={_errorr_mf_to_int(mf)}, "
+                                f"MTs=({mt_row}, {mt_col}): expected "
+                                f"{expected_shape}, got {block.shape}.")
+                        row.append(block)
+                    rows.append(row)
+
+                raw = np.block(rows)
+                symmetric = 0.5 * (raw + raw.T)
+                eigenvalues, eigenvectors = np.linalg.eigh(symmetric)
+                if eigenvalues.size > 0:
+                    spectral_radius = float(np.max(np.abs(eigenvalues)))
+                else:
+                    spectral_radius = 0.0
+
+                tolerance = atol + rtol * spectral_radius
+                negative_mask = eigenvalues < -tolerance
+                all_negative_mask = eigenvalues < 0.0
+                n_negative = int(np.count_nonzero(negative_mask))
+
+                message = (
+                    "Selected covariance matrix is not positive "
+                    f"semidefinite for ZA={za}, "
+                    f"MF={_errorr_mf_to_int(mf)}, MTs={tuple(mts)}: "
+                    f"{n_negative} eigenvalue(s) below -{tolerance:.6e}; "
+                    f"minimum eigenvalue={eigenvalues.min():.6e}.")
+
+                if n_negative and policy == "raise":
+                    raise NonPositiveSemidefiniteError(message)
+
+                if n_negative and policy == "warn":
+                    warnings.warn(
+                        message + " The unmodified covariance is used.",
+                        NonPositiveSemidefiniteWarning,
+                        stacklevel=3,
+                    )
+
+                if n_negative and policy == "eigen_decomp":
+                    action_message = ("set to zero" if neg_eigval_policy == "zero"
+                                      else "replaced by their absolute values")
+                    warnings.warn(
+                        message + f" Negative eigenvalues are {action_message}.",
+                        NonPositiveSemidefiniteWarning,
+                        stacklevel=3,
+                    )
+
+                if policy == "eigen_decomp":
+                    if neg_eigval_policy == "zero":
+                        used_eigenvalues = np.maximum(eigenvalues, 0.0)
+                    else:
+                        used_eigenvalues = np.abs(eigenvalues)
+                    used = ((eigenvectors * used_eigenvalues) @ eigenvectors.T)
+                else:
+                    used_eigenvalues = eigenvalues.copy()
+                    used = raw
+
+                slices = {
+                    mt: slice(i * n_groups, (i + 1) * n_groups)
+                    for i, mt in enumerate(mts)
+                }
+                cov_block[(za, mf)] = {
+                    "mts": tuple(mts),
+                    "slices": slices,
+                    "raw": raw,
+                    "symmetric": symmetric,
+                    "used": used,
+                    "eigenvalues": eigenvalues,
+                    "used_eigenvalues": used_eigenvalues,
+                    "eigenvectors": eigenvectors,
+                    "tolerance": tolerance,
+                    "negative_mask": negative_mask,
+                    "all_negative_mask": all_negative_mask,
+                    "policy": policy,
+                    "neg_eigval_policy": neg_eigval_policy,
+                    "asymmetry_norm": float(np.linalg.norm(raw - raw.T)),
+                }
+        return cov_block
+
+    @staticmethod
+    def _covariance_block(prepared_cov_block, za, mf, mt_row, mt_col):
+        """Return one MT-pair slice from a prepared selected covariance."""
+        block = prepared_cov_block[(za, mf)]
+        return block["used"][block["slices"][mt_row], block["slices"][mt_col]]
+
+    @staticmethod
+    def _covariance_diagnostics_frame(prepared, za_dict):
+        """Build one compact PSD-diagnostics row per selected ZA/MF block."""
+        records = []
+        for (za, mf), block in prepared.items():
+            eigenvalues = block["eigenvalues"]
+            records.append({
+                "ZA": za_dict.get(za, str(za)),
+                "MF": _errorr_mf_to_int(mf),
+                "selected_MTs": block["mts"],
+                "dimension": len(eigenvalues),
+                "minimum_eigenvalue": float(eigenvalues.min()),
+                "tolerance": block["tolerance"],
+                "negative_eigenvalues": int(np.count_nonzero(block["negative_mask"])),
+                "negative_eigenvalues_set_to_zero": (int(np.count_nonzero(block["all_negative_mask"]))
+                                                      if block["policy"] == "eigen_decomp" and
+                                                      block["neg_eigval_policy"] == "zero" else 0),
+                "absolute_eigenvalues": (int(np.count_nonzero(block["all_negative_mask"]))
+                                         if block["policy"] == "eigen_decomp" and
+                                         block["neg_eigval_policy"] == "absolute" else 0),
+                "asymmetry_norm": block["asymmetry_norm"],
+                "policy": block["policy"],
+                "neg_eigval_policy": (block["neg_eigval_policy"]
+                                      if block["policy"] == "eigen_decomp" else None),
+                "repaired": (block["policy"] == "eigen_decomp"
+                             and bool(np.any(block["all_negative_mask"]))),
+            })
+        columns = [
+            "ZA",
+            "MF",
+            "selected_MTs",
+            "dimension",
+            "minimum_eigenvalue",
+            "tolerance",
+            "negative_eigenvalues",
+            "negative_eigenvalues_set_to_zero",
+            "absolute_eigenvalues",
+            "asymmetry_norm",
+            "policy",
+            "neg_eigval_policy",
+            "repaired",
+        ]
+        frame = pd.DataFrame(records, columns=columns)
+        return frame.set_index(["ZA", "MF"]).sort_index()
+
+    @staticmethod
+    def _uncertainty_eigenmode_tables(sens, list_resp, list_mat, map_MF2MT,
+                                      za_dict, sens_MC, sigma, prepared):
+        """Return full-mode and 50-50 per-MT modal variance tables."""
+        mode_records = []
+        mt_records = []
+
+        def sensitivity_vector(response, material, mf, mt, za):
+            key = _single_sensitivity_key_for_covariance(sens, mf, mt)
+            exists = (response in sens.responses and material in sens.materials
+                      and key in sens.MTs and za in sens.zaid)
+            if not exists:
+                return np.zeros((sens.n_groups, ))
+            result = sens.get(resp=[response], mat=[material], MT=[key], za=[za], group_order="ascending")
+            if sens_MC and isinstance(result, tuple):
+                average, rsd = result
+                if rsd is not None:
+                    return _sensitivity_with_rsd(average, rsd, sigma=sigma)
+                return np.squeeze(average)
+            return np.squeeze(result)
+
+        for response in list_resp:
+            for material in list_mat:
+                for za in za_dict:
+                    for mf in map_MF2MT[za]:
+                        if (za, mf) not in prepared:
+                            continue
+                        block = prepared[(za, mf)]
+                        vectors = {
+                            mt: np.atleast_1d(
+                                sensitivity_vector(response, material, mf, mt, za)
+                                             ) for mt in block["mts"]
+                                    }
+                        za_label = za_dict[za]
+                        mf_number = _errorr_mf_to_int(mf)
+
+                        for mode, (eigenvalue, used_eigenvalue) in enumerate(
+                                zip(block["eigenvalues"],
+                                    block["used_eigenvalues"])):
+                            eigenvector = block["eigenvectors"][:, mode]
+                            projections = {
+                                mt: np.dot(eigenvector[block["slices"][mt]],
+                                       vectors[mt]) for mt in block["mts"]
+                                            }
+                            total_projection = sum(projections.values(), 0.0)
+                            raw_variance = eigenvalue * total_projection**2
+                            used_variance = (used_eigenvalue *
+                                             total_projection**2)
+                            significant_negative = bool(eigenvalue < -block["tolerance"])
+                            set_to_zero = bool(eigenvalue < 0.0 and block["policy"] == "eigen_decomp"
+                                               and block["neg_eigval_policy"] == "zero")
+                            absolute_value_applied = bool(
+                                eigenvalue < 0.0 and block["policy"] == "eigen_decomp"
+                                and block["neg_eigval_policy"] == "absolute")
+                            mode_records.append({
+                                "RESPONSE": response,
+                                "MATERIAL": material,
+                                "ZA": za_label,
+                                "MF": mf_number,
+                                "EIGENMODE": mode,
+                                "eigenvalue": eigenvalue,
+                                "used_eigenvalue": used_eigenvalue,
+                                "negative": significant_negative,
+                                "set_to_zero": set_to_zero,
+                                "absolute_value_applied": absolute_value_applied,
+                                "raw_variance": raw_variance,
+                                "used_variance": used_variance,
+                            })
+
+                            for mt, projection in projections.items():
+                                other_projection = (total_projection -
+                                                    projection)
+                                raw_diagonal = eigenvalue * projection**2
+                                raw_cross = (eigenvalue * projection * other_projection)
+                                used_diagonal = (used_eigenvalue * projection**2)
+                                used_cross = (used_eigenvalue * projection * other_projection)
+                                mt_records.append({
+                                    "RESPONSE": response,
+                                    "MATERIAL": material,
+                                    "ZA": za_label,
+                                    "MF": mf_number,
+                                    "EIGENMODE": mode,
+                                    "MT": mt,
+                                    "raw_diagonal_variance": raw_diagonal,
+                                    "raw_cross_variance_allocated": raw_cross,
+                                    "raw_attributed_variance": (raw_diagonal + raw_cross),
+                                    "used_diagonal_variance": used_diagonal,
+                                    "used_cross_variance_allocated": used_cross,
+                                    "used_attributed_variance": (used_diagonal + used_cross),
+                                })
+
+        mode_index = ["RESPONSE", "MATERIAL", "ZA", "MF", "EIGENMODE"]
+        mode_columns = mode_index + [
+            "eigenvalue",
+            "used_eigenvalue",
+            "negative",
+            "set_to_zero",
+            "absolute_value_applied",
+            "raw_variance",
+            "used_variance",
+        ]
+        mt_index = mode_index + ["MT"]
+        mt_columns = mt_index + [
+            "raw_diagonal_variance",
+            "raw_cross_variance_allocated",
+            "raw_attributed_variance",
+            "used_diagonal_variance",
+            "used_cross_variance_allocated",
+            "used_attributed_variance",
+        ]
+        modes = pd.DataFrame(mode_records, columns=mode_columns)
+        modes = modes.set_index(mode_index).sort_index()
+        mts = pd.DataFrame(mt_records, columns=mt_columns)
+        mts = mts.set_index(mt_index).sort_index()
+        return modes, mts
 
     @staticmethod
     def _signed_sqrt_value(value):
@@ -1364,7 +1726,11 @@ class Sandwich:
     def compute_uncertainty(sens, covmat, list_resp, list_mat, map_MF2MT, za_dict,
                             sens_MC, sigma=None, sum_MFs=False, include_MF=False,
                             missing_cov="zero", missing_cov_rsd=0.20,
-                            missing_cov_corr=0.0):
+                            missing_cov_corr=0.0, non_psd_policy="raise",
+                            non_psd_rtol=1e-10, non_psd_atol=1e-12,
+                            neg_eigval_policy="zero",
+                            _prepared_covariance_blocks=None,
+                            _include_eigenmode_tables=True):
         """
         Propagate nuclear data covariance to response uncertainty.
 
@@ -1397,6 +1763,12 @@ class Sandwich:
             RSD used by the ``"assume"`` missing-covariance policy.
         missing_cov_corr : float, optional
             Off-diagonal correlation used by the ``"assume"`` policy.
+        non_psd_policy : {"warn", "raise", "eigen_decomp"}, optional
+            Policy for non-PSD selected ZA/MF covariance matrices.
+        non_psd_rtol, non_psd_atol : float, optional
+            Relative and absolute PSD eigenvalue tolerances.
+        neg_eigval_policy : {"zero", "absolute"}, optional
+            Treatment of negative eigenvalues under ``"eigen_decomp"``.
 
         Returns
         -------
@@ -1405,6 +1777,15 @@ class Sandwich:
         dict_map : dict
             Metadata-to-index mapping used during the calculation.
         """
+        if _prepared_covariance_blocks is None:
+            prepared = Sandwich._prepare_covariance_blocks( covmat, map_MF2MT, sens.n_groups, 
+                                                            non_psd_policy=non_psd_policy, 
+                                                            non_psd_rtol=non_psd_rtol,
+                                                            non_psd_atol=non_psd_atol, 
+                                                            neg_eigval_policy=neg_eigval_policy)
+        else:
+            prepared = _prepared_covariance_blocks
+
         # --- apply sandwich rule
         output = {}
         dict_map = {}
@@ -1472,7 +1853,7 @@ class Sandwich:
                                     S = np.zeros((sens.n_groups, ))
                             # get covariance matrix
                             if cov_df is not None:
-                                C = cov_df.get((mt, mt), MF=mf, to_numpy=True)
+                                C = Sandwich._covariance_block(prepared, za, mf, mt, mt)
 
                             # apply sandwich rule
                             if cov_df is not None:
@@ -1530,7 +1911,7 @@ class Sandwich:
                                       and za in sens.zaid)
                             # get covariance matrix
                             if cov_df is not None:
-                                C = cov_df.get(nm, MF=mf, to_numpy=True)
+                                C = Sandwich._covariance_block(prepared, za, mf, nm[0], nm[1])
 
                             # get group-wise sensitivity vector
                             if sens_MC:
@@ -1638,13 +2019,24 @@ class Sandwich:
             ["RESPONSE", "MATERIAL", "ZA"], include_MF=include_MF,
             sum_MFs=sum_MFs)
 
+        if _include_eigenmode_tables:
+            eigenmodes, eigenmode_mts = Sandwich._uncertainty_eigenmode_tables(
+                sens, list_resp, list_mat, map_MF2MT, za_dict, sens_MC, sigma,
+                prepared)
+            uncertainty.attrs["eigenmodes"] = eigenmodes
+            uncertainty.attrs["eigenmode_mts"] = eigenmode_mts
+
+        uncertainty.attrs["covariance_diagnostics"] = (Sandwich._covariance_diagnostics_frame(prepared, za_dict))
+
         return uncertainty, dict_map
 
     @staticmethod
     def compute_representativity(sens, sens2, covmat, list_resp, map_MF2MT, za_dict,
                                  sens_MC, sigma=None, sum_MFs=False, include_MF=False,
                                  missing_cov="zero", missing_cov_rsd=0.20,
-                                 missing_cov_corr=0.0):
+                                 missing_cov_corr=0.0, non_psd_policy="raise",
+                                 non_psd_rtol=1e-10, non_psd_atol=1e-12,
+                                 neg_eigval_policy="zero"):
         """
         Compute covariance-weighted representativity between two sensitivities.
 
@@ -1675,6 +2067,13 @@ class Sandwich:
             RSD used by the ``"assume"`` missing-covariance policy.
         missing_cov_corr : float, optional
             Off-diagonal correlation used by the ``"assume"`` policy.
+        non_psd_policy : {"warn", "raise", "eigen_decomp"}, optional
+            Policy for non-PSD selected ZA/MF covariance matrices. The same
+            prepared matrix is used in the numerator and both norms.
+        non_psd_rtol, non_psd_atol : float, optional
+            Relative and absolute PSD eigenvalue tolerances.
+        neg_eigval_policy : {"zero", "absolute"}, optional
+            Treatment of negative eigenvalues under ``"eigen_decomp"``.
 
         Returns
         -------
@@ -1683,6 +2082,13 @@ class Sandwich:
         dict_map : dict
             Metadata-to-index mapping used during the calculation.
         """
+
+        prepared = Sandwich._prepare_covariance_blocks(covmat,map_MF2MT,sens.n_groups,
+                                                        non_psd_policy=non_psd_policy,
+                                                        non_psd_rtol=non_psd_rtol,
+                                                        non_psd_atol=non_psd_atol,
+                                                        neg_eigval_policy=neg_eigval_policy,
+                                                        )
 
         mat = _default_material_for_integral_comparison(sens)
         mat2 = _default_material_for_integral_comparison(sens2)
@@ -1746,7 +2152,7 @@ class Sandwich:
 
                         # get covariance matrix
                         if cov_df is not None:
-                            C = cov_df.get((mt, mt), MF=mf, to_numpy=True)
+                            C = Sandwich._covariance_block(prepared, za, mf, mt, mt)
 
                         # apply sandwich rule
                         if cov_df is not None:
@@ -1811,7 +2217,7 @@ class Sandwich:
 
                         # get covariance matrix
                         if cov_df is not None:
-                            C = cov_df.get(nm, MF=mf, to_numpy=True)
+                            C = Sandwich._covariance_block(prepared, za, mf, nm[0], nm[1])
 
                         # apply sandwich rule
                         if cov_df is not None:
@@ -1859,12 +2265,24 @@ class Sandwich:
             sens, covmat, list_resp, [mat], map_MF2MT, za_dict, sens_MC1,
             sigma=sigma, sum_MFs=sum_MFs, include_MF=include_MF,
             missing_cov=missing_cov, missing_cov_rsd=missing_cov_rsd,
-            missing_cov_corr=missing_cov_corr)
+            missing_cov_corr=missing_cov_corr,
+            non_psd_policy=non_psd_policy,
+            non_psd_rtol=non_psd_rtol,
+            non_psd_atol=non_psd_atol,
+            neg_eigval_policy=neg_eigval_policy,
+            _prepared_covariance_blocks=prepared,
+            _include_eigenmode_tables=False)
         unc2, dict_map2 = Sandwich.compute_uncertainty(
             sens2, covmat, list_resp, [mat2], map_MF2MT, za_dict, sens_MC2,
             sigma=sigma, sum_MFs=sum_MFs, include_MF=include_MF,
             missing_cov=missing_cov, missing_cov_rsd=missing_cov_rsd,
-            missing_cov_corr=missing_cov_corr)
+            missing_cov_corr=missing_cov_corr,
+            non_psd_policy=non_psd_policy,
+            non_psd_rtol=non_psd_rtol,
+            non_psd_atol=non_psd_atol,
+            neg_eigval_policy=neg_eigval_policy,
+            _prepared_covariance_blocks=prepared,
+            _include_eigenmode_tables=False)
 
         # --- assign normalised output and convert in pandas.DataFrame
         norm = {}
@@ -1910,6 +2328,8 @@ class Sandwich:
             include_MF=include_MF,
             sum_MFs=sum_MFs,
         )
+        representativity.attrs["covariance_diagnostics"] = (
+            Sandwich._covariance_diagnostics_frame(prepared, za_dict))
         dict_map = dict_map
 
         return representativity, dict_map
@@ -1917,6 +2337,18 @@ class Sandwich:
 
 class SandwichError(Exception):
     """Custom exception raised for sandwich-formula calculation errors."""
+
+    pass
+
+
+class NonPositiveSemidefiniteError(SandwichError):
+    """Raised when a selected covariance block is not positive semidefinite."""
+
+    pass
+
+
+class NonPositiveSemidefiniteWarning(UserWarning):
+    """Warn that a selected covariance block is not positive semidefinite."""
 
     pass
 
