@@ -37,6 +37,7 @@ def _value_parts(table, key):
     return float(unp.nominal_values(value)), float(unp.std_devs(value))
 
 
+@pytest.mark.filterwarnings("ignore:Selected covariance matrix is not positive semidefinite")
 def test_example1_notebook_uncertainty_regression():
     """
     Preserve the example1 uncertainty values validated outside pyNDUS.
@@ -74,6 +75,7 @@ def test_example1_notebook_uncertainty_regression():
         list_resp=["keff"],
         sum_MFs=False,
         include_MF=True,
+        non_psd_policy="warn",
     )
 
     assert sand.MFs2MTs[922380] == {

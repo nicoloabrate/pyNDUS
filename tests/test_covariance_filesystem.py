@@ -311,6 +311,83 @@ def test_get_requires_explicit_mf(monkeypatch):
         cov.get(18, 33)
 
 
+def _covariance_with_matrix(module, matrix, mf="errorr33"):
+    """Build a Covariance instance around one labeled matrix."""
+    cov = object.__new__(module.Covariance)
+    index = pd.Index(range(len(matrix)), name="group")
+    cov._rcov = {mf: pd.DataFrame(matrix, index=index, columns=index)}
+    return cov
+
+
+def test_check_psd_uses_extreme_eigenvalues_unless_full_spectrum_is_requested(
+        monkeypatch):
+    """Keep the ordinary check cheap and compute eigenpairs only on request."""
+    module = _load_covariance_module(monkeypatch)
+    cov = _covariance_with_matrix(module, [[1.0, 1.2], [1.2, 1.0]])
+
+    diagnostics = cov.check_psd(dim_warning_threshold=None)
+    full_diagnostics, eigenpairs = cov.check_psd(
+        return_eigenpairs=True, dim_warning_threshold=None)
+
+    assert not diagnostics.loc[33, "is_psd"]
+    assert diagnostics.loc[33, "negative_eigenvalues"] is None
+    assert full_diagnostics.loc[33, "negative_eigenvalues"] == 1
+    assert eigenpairs["errorr33"][0].shape == (2, )
+    assert eigenpairs["errorr33"][1].shape == (2, 2)
+
+
+@pytest.mark.parametrize("method", ["clipped", "nearest"])
+@pytest.mark.filterwarnings("ignore:statsmodels PSD repair")
+def test_statsmodels_psd_repair_preserves_diagonal_and_original(monkeypatch, method):
+    """Repair a complete MF without mutating the source covariance."""
+    pytest.importorskip("statsmodels")
+    module = _load_covariance_module(monkeypatch)
+    matrix = np.array([[1.0, 1.2, 0.0],
+                       [1.2, 1.0, 0.0],
+                       [0.0, 0.0, 0.0]])
+    cov = _covariance_with_matrix(module, matrix)
+
+    repaired = cov.repair_psd(method=method, max_rel_correction=None,
+                              dim_warning_threshold=None)
+
+    np.testing.assert_allclose(cov.rcov["errorr33"], matrix)
+    np.testing.assert_allclose(np.diag(repaired.rcov["errorr33"]),
+                               np.diag(matrix))
+    np.testing.assert_allclose(repaired.rcov["errorr33"].iloc[2], 0.0)
+    assert not cov.was_repaired
+    assert repaired.was_repaired
+    assert repaired.is_psd(dim_warning_threshold=None)
+    assert repaired.psd_history.loc[0, "scope"] == "complete_MF"
+    assert repaired.psd_history.loc[0, "diagonal_preserved"]
+
+
+def test_statsmodels_psd_repair_enforces_configurable_relative_limit(monkeypatch):
+    """Reject a large repair unless the user explicitly disables the limit."""
+    pytest.importorskip("statsmodels")
+    module = _load_covariance_module(monkeypatch)
+    cov = _covariance_with_matrix(module, [[1.0, 1.2], [1.2, 1.0]])
+
+    with pytest.raises(module.CovarianceError, match="max_rel_correction"):
+        cov.repair_psd(method="clipped", max_rel_correction=0.10,
+                       dim_warning_threshold=None)
+
+    repaired = cov.repair_psd(method="clipped", max_rel_correction=None,
+                              dim_warning_threshold=None)
+    assert repaired.is_psd(dim_warning_threshold=None)
+
+
+def test_statsmodels_psd_repair_rejects_zero_variance_with_covariance(monkeypatch):
+    """Reject a fixed diagonal for which no PSD covariance can exist."""
+    pytest.importorskip("statsmodels")
+    module = _load_covariance_module(monkeypatch)
+    cov = _covariance_with_matrix(module, [[1.0, 0.1], [0.1, 0.0]])
+
+    with pytest.raises(module.CovarianceError,
+                       match="zero variance with non-zero covariance"):
+        cov.repair_psd(method="clipped", max_rel_correction=None,
+                       dim_warning_threshold=None)
+
+
 def test_non_database_mode_generates_missing_errorr_files_in_cwd(
         monkeypatch, tmp_path):
     """Generate missing ERRORR files directly in cwd when database is False."""

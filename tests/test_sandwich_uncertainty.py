@@ -8,6 +8,8 @@ import numpy.testing as npt
 from uncertainties import unumpy as unp
 
 import pyNDUS.sandwich as sandwich_module
+import pyNDUS._psd as psd_module
+from pyNDUS._psd import PSDCheckCostWarning
 from pyNDUS.sandwich import (
     NonPositiveSemidefiniteError,
     NonPositiveSemidefiniteWarning,
@@ -1204,6 +1206,51 @@ def test_non_psd_default_policy_is_raise():
             sens_MC=False)
 
 
+def test_raise_policy_skips_eigenvectors(monkeypatch):
+    """Calculate eigenvalues without calculating eigenvectors under raise."""
+    za = 922350
+    mt = 18
+    mf = "errorr33"
+    sens = FakeSensitivity({("keff", "fuel", za, mt): np.ones(2)}, n_groups=2)
+    covmat = {za: FakeCovZA({mf: {(mt, mt): np.eye(2)}})}
+
+    def fail_full_eigendecomposition(*args, **kwargs):
+        raise AssertionError("raise policy must not calculate eigenvectors")
+
+    scipy_eigh = psd_module.spla.eigh
+    scipy_eigh_calls = []
+
+    def count_eigenvalue_checks(*args, **kwargs):
+        scipy_eigh_calls.append(kwargs)
+        return scipy_eigh(*args, **kwargs)
+
+    monkeypatch.setattr(np.linalg, "eigh", fail_full_eigendecomposition)
+    monkeypatch.setattr(psd_module.spla, "eigh", count_eigenvalue_checks)
+    result, _ = Sandwich.compute_uncertainty(
+        sens, covmat, ["keff"], ["fuel"], {za: {mf: [mt]}}, {za: "U235"},
+        sens_MC=False, non_psd_policy="raise")
+
+    assert len(scipy_eigh_calls) == 1
+    assert scipy_eigh_calls[0]["eigvals_only"]
+    assert "subset_by_index" not in scipy_eigh_calls[0]
+    assert result.attrs["eigenmodes"].empty
+    assert result.attrs["covariance_diagnostics"].loc[("U235", 33), "negative_eigenvalues"] == 0
+
+
+def test_psd_check_warns_above_configurable_dimension():
+    """Warn before checking a selected covariance matrix above the threshold."""
+    za = 922350
+    mt = 18
+    mf = "errorr33"
+    sens = FakeSensitivity({("keff", "fuel", za, mt): np.ones(2)}, n_groups=2)
+    covmat = {za: FakeCovZA({mf: {(mt, mt): np.eye(2)}})}
+
+    with pytest.warns(PSDCheckCostWarning, match="2x2"):
+        Sandwich.compute_uncertainty(
+            sens, covmat, ["keff"], ["fuel"], {za: {mf: [mt]}}, {za: "U235"},
+            sens_MC=False, psd_check_warning_threshold=1)
+
+
 def test_non_psd_eigen_decomp_clips_modes_and_closes_to_uncertainty():
     """Propagate the reconstructed PSD matrix and retain raw diagnostics."""
     sens, covmat, mapping, za_dict = _indefinite_two_mt_case()
@@ -1225,6 +1272,7 @@ def test_non_psd_eigen_decomp_clips_modes_and_closes_to_uncertainty():
     assert modes["absolute_value_applied"].sum() == 0
     npt.assert_allclose(modes["raw_variance"].sum(), 1.0)
     npt.assert_allclose(modes["used_variance"].sum(), 1.5)
+    npt.assert_allclose(modes["neg_to_pos_NDU_ratio"], 1.0 / 3.0)
     diagnostics = result.attrs["covariance_diagnostics"]
     assert diagnostics.loc[("U238", 33),
                            "negative_eigenvalues_set_to_zero"] == 2
@@ -1233,6 +1281,7 @@ def test_non_psd_eigen_decomp_clips_modes_and_closes_to_uncertainty():
                            "neg_eigval_policy"] == "zero"
 
     mt_modes = result.attrs["eigenmode_mts"]
+    npt.assert_allclose(mt_modes["neg_to_pos_NDU_ratio"], 1.0 / 3.0)
     attributed = mt_modes["used_attributed_variance"].groupby(
         level=["RESPONSE", "MATERIAL", "ZA", "MF", "EIGENMODE"]).sum()
     npt.assert_allclose(
