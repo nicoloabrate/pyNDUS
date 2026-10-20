@@ -10,6 +10,8 @@ from .sandwich import (
 __all__ = [
     "Covariance",
     "CovarianceError",
+    "CovarianceRepairWarning",
+    "PSDCheckCostWarning",
     "Sensitivity",
     "SensitivityError",
     "SensitivityAlgebraError",
@@ -32,6 +34,14 @@ def __getattr__(name):
     if name == "CovarianceError":
         from .covariance import CovarianceError
         return CovarianceError
+
+    if name == "CovarianceRepairWarning":
+        from .covariance import CovarianceRepairWarning
+        return CovarianceRepairWarning
+
+    if name == "PSDCheckCostWarning":
+        from ._psd import PSDCheckCostWarning
+        return PSDCheckCostWarning
 
     if name == "Sensitivity":
         from .sensitivity import Sensitivity

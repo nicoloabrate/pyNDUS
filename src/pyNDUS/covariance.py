@@ -11,6 +11,8 @@ import os
 import sys
 import sandy
 import socket
+import copy
+import warnings
 import numpy as np
 import pandas as pd
 import shutil as sh
@@ -21,11 +23,14 @@ from datetime import datetime
 from contextlib import redirect_stdout
 try:
     import pyNDUS.utils as utils
+    from pyNDUS._psd import PSDCheckCostWarning, _check_psd_matrix
 except ModuleNotFoundError:  # when run as a script
     try:
         from . import utils
+        from ._psd import PSDCheckCostWarning, _check_psd_matrix
     except ImportError:
         import utils
+        from _psd import PSDCheckCostWarning, _check_psd_matrix
 
 sandy_ver = sandy.__version__
 
@@ -92,6 +97,10 @@ class Covariance():
         - MF=33 for cross sections
         - MF=34 for angular distributions
         - MF=35 for energy distributions
+    was_repaired : bool
+        Whether :meth:`repair_psd` has modified at least one MF matrix.
+    psd_history : pandas.DataFrame
+        Provenance and numerical diagnostics for explicit PSD repairs.
     """
 
     def __init__(self,
@@ -197,7 +206,7 @@ class Covariance():
                 else:
                     group_structure_errorr = None
 
-                # Get the ENDF-6 file.
+                # --- Get the ENDF-6 file.
                 endf6_path = endf6_dir / f"{self.zais}.endf"
 
                 if endf6_path.exists():
@@ -223,7 +232,7 @@ class Covariance():
                 if generated:
                     errorr_out.update(generated)
 
-                # Read the files from disk, including any files created by ERRORR
+                # --- Read the files from disk, including any files created by ERRORR
                 # but not returned directly by sandy_calls_errorr.
                 errorr_out.update(
                     Covariance._read_existing_errorr_files(errorr_dir,
@@ -232,7 +241,7 @@ class Covariance():
                                                            skip=errorr_out))
 
         else:
-            # In non-database mode, cwd directly contains the ERRORR files.
+            # --- In non-database mode, cwd directly contains the ERRORR files.
             errorr_dir = self.path
 
             errorr_out.update(
@@ -849,6 +858,226 @@ class Covariance():
 
         self._rcov = out
 
+    @property
+    def was_repaired(self):
+        """Whether any covariance MF was modified by :meth:`repair_psd`."""
+        return any(record.get("repaired", False)
+                   for record in getattr(self, "_psd_history", []))
+
+    @property
+    def psd_history(self):
+        """Return the recorded PSD-repair provenance as a DataFrame."""
+        return pd.DataFrame(getattr(self, "_psd_history", [])).copy()
+
+    @staticmethod
+    def _normalize_selected_mfs(MFs, available):
+        """Normalize optional MF selections against the available covariance data."""
+        if MFs is None:
+            return list(available)
+        if isinstance(MFs, (int, str)):
+            MFs = [MFs]
+        elif not isinstance(MFs, list):
+            raise ValueError(f"MFs must be int, str, list or None, not {type(MFs)}")
+        selected = []
+        for mf in MFs:
+            if isinstance(mf, int):
+                mf = f"errorr{mf}"
+            elif isinstance(mf, str) and not mf.startswith("errorr"):
+                mf = f"errorr{int(mf.replace('MF', ''))}"
+            if mf not in available:
+                raise ValueError(f"MF={mf} not available in covariance matrix.")
+            selected.append(mf)
+        return selected
+
+    def check_psd(self, MFs=None, rtol=1e-10, atol=1e-12,
+                  return_eigenpairs=False, dim_warning_threshold=1000):
+        """
+        Check positive semidefiniteness separately for each selected MF.
+
+        The default check computes only the smallest and largest eigenvalues.
+        Set ``return_eigenpairs=True`` only when the full spectrum is needed.
+
+        Returns
+        -------
+        pandas.DataFrame or tuple
+            One diagnostics row per MF. If ``return_eigenpairs`` is True, the
+            DataFrame and a dictionary of MF-wise eigenpairs are returned.
+        """
+        records = []
+        eigenpairs = {}
+        for mf in self._normalize_selected_mfs(MFs, self.rcov):
+            result = _check_psd_matrix(self.rcov[mf].to_numpy(), rtol=rtol,
+                                       atol=atol, return_eigenpairs=return_eigenpairs,
+                                       dim_warning_threshold=dim_warning_threshold)
+            diagonal = np.diag(result["symmetric"])
+            records.append({
+                "MF": int(mf.replace("errorr", "")),
+                "dimension": result["dimension"],
+                "zero_variance_rows": int(np.count_nonzero(diagonal == 0.0)),
+                "minimum_eigenvalue": result["minimum_eigenvalue"],
+                "maximum_eigenvalue": result["maximum_eigenvalue"],
+                "spectral_radius": result["spectral_radius"],
+                "tolerance": result["tolerance"],
+                "negative_eigenvalues": result["negative_eigenvalues"],
+                "asymmetry_norm": result["asymmetry_norm"],
+                "is_psd": result["is_psd"],
+            })
+            if return_eigenpairs:
+                eigenpairs[mf] = (result["eigenvalues"], result["eigenvectors"])
+        diagnostics = pd.DataFrame(records).set_index("MF").sort_index()
+        if return_eigenpairs:
+            return diagnostics, eigenpairs
+        return diagnostics
+
+    def is_psd(self, MFs=None, rtol=1e-10, atol=1e-12, dim_warning_threshold=1000):
+        """Return True when every selected MF covariance matrix is PSD."""
+        diagnostics = self.check_psd(MFs=MFs, rtol=rtol, atol=atol,
+                                     dim_warning_threshold=dim_warning_threshold)
+        return bool(diagnostics["is_psd"].all())
+
+    def repair_psd(self, MFs=None, method="clipped", threshold=1e-15,
+                   n_fact=100, max_rel_correction=0.10, rtol=1e-10,
+                   atol=1e-12, inplace=False, dim_warning_threshold=1000):
+        """
+        Explicitly repair complete MF covariance matrices with ``statsmodels``.
+
+        The covariance is converted to a correlation matrix, repaired with
+        ``statsmodels.stats.correlation_tools.cov_nearest``, and converted back
+        while preserving the original variances. Zero-variance rows are
+        removed during the correlation repair and restored afterwards.
+        """
+        # --- input validation and pkg import
+        try:
+            import statsmodels
+            from statsmodels.stats.correlation_tools import cov_nearest
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "Covariance.repair_psd requires the 'statsmodels' package.") from exc
+        if not isinstance(method, str):
+            raise ValueError("'method' must be 'nearest' or 'clipped'")
+        method = method.lower()
+        if method not in {"nearest", "clipped"}:
+            raise ValueError("'method' must be 'nearest' or 'clipped'")
+        try:
+            threshold = float(threshold)
+        except (TypeError, ValueError):
+            raise ValueError("'threshold' must be >=0")
+        if not np.isfinite(threshold) or threshold < 0:
+            raise ValueError("'threshold' must be >=0")
+        if not isinstance(n_fact, int) or n_fact <= 0:
+            raise ValueError("'n_fact' must be a positive integer")
+        if max_rel_correction is not None:
+            try:
+                max_rel_correction = float(max_rel_correction)
+            except (TypeError, ValueError):
+                raise ValueError("'max_rel_correction' must be >=0 or None")
+            if not np.isfinite(max_rel_correction) or max_rel_correction < 0:
+                raise ValueError("'max_rel_correction' must be >=0 or None")
+        if not isinstance(inplace, bool):
+            raise ValueError("'inplace' must be bool")
+
+        # --- preparation to repair each selected MF
+        selected = self._normalize_selected_mfs(MFs, self.rcov)
+        candidate = copy.deepcopy(self)
+        if not hasattr(candidate, "_psd_history"):
+            candidate._psd_history = []
+        if not hasattr(candidate, "_raw_rcov"):
+            candidate._raw_rcov = {}
+
+        for mf in selected:
+            # --- check PSD and repair if needed
+            original_frame = self.rcov[mf]
+            original = np.asarray(original_frame, dtype=float)
+            before = _check_psd_matrix(original, rtol=rtol, atol=atol,
+                                       dim_warning_threshold=dim_warning_threshold)
+            symmetric = before["symmetric"]
+            diagonal = np.diag(symmetric).copy()
+            if np.any(diagonal < 0.0):
+                raise CovarianceError(
+                    f"Cannot preserve a negative variance while repairing MF={mf}.")
+            zero_variance = diagonal == 0.0
+            if (np.any(zero_variance) and
+                    np.any(np.max(np.abs(symmetric[zero_variance]), axis=1) > 0.0)):
+                raise CovarianceError(
+                    f"MF={mf} contains a zero variance with non-zero covariance; "
+                    "no PSD matrix can preserve that diagonal.")
+
+            # --- repair the covariance matrix using statsmodels
+            active = ~zero_variance
+            repaired = np.zeros_like(symmetric)
+            captured_messages = []
+            if before["is_psd"]:
+                repaired = symmetric.copy()
+            elif np.any(active):
+                active_covariance = symmetric[np.ix_(active, active)]
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    repaired_active = cov_nearest(active_covariance, method=method,
+                                                  threshold=threshold, n_fact=n_fact)
+                captured_messages = [str(item.message) for item in caught]
+                np.fill_diagonal(repaired_active, diagonal[active])
+                repaired[np.ix_(active, active)] = repaired_active
+            after = _check_psd_matrix(repaired, rtol=rtol, atol=atol,
+                                      dim_warning_threshold=None)
+            if not after["is_psd"]:
+                raise CovarianceError(
+                    f"statsmodels method={method!r} did not produce a PSD "
+                    f"matrix for MF={mf}: minimum eigenvalue="
+                    f"{after['minimum_eigenvalue']:.6e}, tolerance={after['tolerance']:.6e}.")
+
+            # --- compute diagnostics and record provenance
+            correction_norm = float(np.linalg.norm(repaired - original))
+            original_norm = float(np.linalg.norm(original))
+            relative_correction = (correction_norm / original_norm
+                                   if original_norm > 0.0 else
+                                   (0.0 if correction_norm == 0.0 else np.inf))
+            if (max_rel_correction is not None and
+                    relative_correction > max_rel_correction):
+                raise CovarianceError(
+                    f"PSD repair for MF={mf} requires relative correction "
+                    f"{relative_correction:.6e}, above max_rel_correction="
+                    f"{max_rel_correction:.6e}. Set max_rel_correction=None "
+                    "to accept any correction explicitly.")
+            diagonal_change = (float(np.max(np.abs(np.diag(repaired) - diagonal)))
+                               if diagonal.size else 0.0)
+            repaired_flag = bool(correction_norm > 0.0)
+            if repaired_flag and mf not in candidate._raw_rcov:
+                candidate._raw_rcov[mf] = original_frame.copy(deep=True)
+            candidate._rcov[mf] = pd.DataFrame(repaired, index=original_frame.index,
+                                                columns=original_frame.columns)
+            candidate._psd_history.append({
+                "MF": int(mf.replace("errorr", "")),
+                "method": f"statsmodels_{method}",
+                "statsmodels_version": statsmodels.__version__,
+                "scope": "complete_MF",
+                "dimension": before["dimension"],
+                "active_dimension": int(np.count_nonzero(active)),
+                "zero_variance_rows": int(np.count_nonzero(zero_variance)),
+                "minimum_eigenvalue_before": before["minimum_eigenvalue"],
+                "minimum_eigenvalue_after": after["minimum_eigenvalue"],
+                "tolerance": after["tolerance"],
+                "relative_correction": relative_correction,
+                "maximum_diagonal_change": diagonal_change,
+                "diagonal_preserved": bool(diagonal_change <= atol),
+                "max_rel_correction": max_rel_correction,
+                "statsmodels_warnings": tuple(captured_messages),
+                "converged": not any("iteration" in message.lower()
+                                     for message in captured_messages),
+                "repaired": repaired_flag,
+            })
+            for message in captured_messages:
+                warnings.warn(f"statsmodels PSD repair for MF={mf}: {message}",
+                              CovarianceRepairWarning, stacklevel=2)
+
+        # --- finalize and return
+        if inplace:
+            self._rcov = candidate._rcov
+            self._raw_rcov = candidate._raw_rcov
+            self._psd_history = candidate._psd_history
+            return self
+
+        return candidate
+
     def get(self, MT, *, MF, to_numpy=False):
         """
         Extract a covariance matrix or submatrix for specified MT(s) and MF.
@@ -892,7 +1121,7 @@ class Covariance():
         if MF not in self.MFs2MTs:
             raise ValueError(f"MF={MF} not available in covariance matrix.")
 
-        # check existence of requested MT in the selected MF
+        # --- check existence of requested MT in the selected MF
         available = self.MFs2MTs[MF]
         resolved_MT = []
         for val in MT:
@@ -1094,12 +1323,20 @@ class CovarianceError(Exception):
     pass
 
 
+class CovarianceRepairWarning(UserWarning):
+    """Forward a warning emitted while repairing a covariance matrix."""
+
+    pass
+
+
 def _expose_public_aliases():
     """Expose class symbols on the parent package for clean from-imports."""
     parent = sys.modules.get(__package__)
     if parent is not None:
         parent.Covariance = Covariance
         parent.CovarianceError = CovarianceError
+        parent.PSDCheckCostWarning = PSDCheckCostWarning
+        parent.CovarianceRepairWarning = CovarianceRepairWarning
 
 
 _expose_public_aliases()

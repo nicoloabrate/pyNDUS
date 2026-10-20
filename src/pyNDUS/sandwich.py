@@ -22,6 +22,11 @@ except ImportError:  # when run as a script
     import utils
 
 try:
+    from ._psd import _check_psd_matrix
+except ImportError:
+    from _psd import _check_psd_matrix
+
+try:
     from .covariance import Covariance
 except ModuleNotFoundError:
     try:
@@ -462,6 +467,9 @@ class Sandwich:
         Treatment of negative eigenvalues under the ``"eigen_decomp"`` policy.
         The default ``"zero"`` sets them to zero; ``"absolute"`` uses their
         absolute values.
+    psd_check_dims_warn_thresh : int or None, optional
+        Warn before checking a selected covariance matrix whose dimension is
+        larger than this value. The default is 1000; ``None`` disables the warning.
     representativity : bool, optional
         If True, compute representativity between ``sens`` and ``sens2``.
     similarity : bool, optional
@@ -509,7 +517,7 @@ class Sandwich:
                  representativity=False, similarity=False,
                  uncertainty_output="variance", non_psd_policy="raise",
                  non_psd_rtol=1e-10, non_psd_atol=1e-12,
-                 neg_eigval_policy="zero"):
+                 neg_eigval_policy="zero", psd_check_dims_warn_thresh=1000):
         """
         Initialize a sandwich-formula calculation and store the result.
 
@@ -570,6 +578,7 @@ class Sandwich:
         self.non_psd_rtol = non_psd_rtol
         self.non_psd_atol = non_psd_atol
         self.neg_eigval_policy = neg_eigval_policy
+        self.psd_check_dims_warn_thresh = psd_check_dims_warn_thresh
 
         if not isinstance(sens, Sensitivity):
             raise ValueError(
@@ -907,7 +916,8 @@ class Sandwich:
                 non_psd_policy=non_psd_policy,
                 non_psd_rtol=non_psd_rtol,
                 non_psd_atol=non_psd_atol,
-                neg_eigval_policy=neg_eigval_policy)
+                neg_eigval_policy=neg_eigval_policy,
+                psd_check_dims_warn_thresh=psd_check_dims_warn_thresh)
             self.representativity = representativity
             self.representativity_table = representativity.attrs.get("table")
             self.representativity_by_mf = representativity.attrs.get("by_mf")
@@ -930,7 +940,8 @@ class Sandwich:
                 non_psd_policy=non_psd_policy,
                 non_psd_rtol=non_psd_rtol,
                 non_psd_atol=non_psd_atol,
-                neg_eigval_policy=neg_eigval_policy)
+                neg_eigval_policy=neg_eigval_policy,
+                psd_check_dims_warn_thresh=psd_check_dims_warn_thresh)
             uncertainty_signed_sqrt = self._signed_sqrt_uncertainty(
                 uncertainty_variance)
             self.uncertainty_variance = uncertainty_variance
@@ -1198,7 +1209,7 @@ class Sandwich:
     @staticmethod
     def _prepare_covariance_blocks(covmat, map_MF2MT, n_groups, non_psd_policy="raise",
                                     non_psd_rtol=1e-10, non_psd_atol=1e-12,
-                                    neg_eigval_policy="zero"):
+                                    neg_eigval_policy="zero", psd_check_dims_warn_thresh=1000):
         """
         Assemble, diagnose, and optionally repair selected ZA/MF matrices.
 
@@ -1235,24 +1246,28 @@ class Sandwich:
                     rows.append(row)
 
                 raw = np.block(rows)
-                symmetric = 0.5 * (raw + raw.T)
-                eigenvalues, eigenvectors = np.linalg.eigh(symmetric)
-                if eigenvalues.size > 0:
-                    spectral_radius = float(np.max(np.abs(eigenvalues)))
+                psd = _check_psd_matrix(raw, rtol=rtol, atol=atol,
+                                        return_eigenpairs=policy != "raise",
+                                        dim_warning_threshold=psd_check_dims_warn_thresh)
+                symmetric = psd["symmetric"]
+                eigenvalues = psd["eigenvalues"]
+                eigenvectors = psd["eigenvectors"]
+                tolerance = psd["tolerance"]
+                if eigenvalues is None:
+                    negative_mask = None
+                    all_negative_mask = None
+                    n_negative = int(not psd["is_psd"])
                 else:
-                    spectral_radius = 0.0
-
-                tolerance = atol + rtol * spectral_radius
-                negative_mask = eigenvalues < -tolerance
-                all_negative_mask = eigenvalues < 0.0
-                n_negative = int(np.count_nonzero(negative_mask))
+                    negative_mask = eigenvalues < -tolerance
+                    all_negative_mask = eigenvalues < 0.0
+                    n_negative = int(np.count_nonzero(negative_mask))
 
                 message = (
                     "Selected covariance matrix is not positive "
                     f"semidefinite for ZA={za}, "
                     f"MF={_errorr_mf_to_int(mf)}, MTs={tuple(mts)}: "
-                    f"{n_negative} eigenvalue(s) below -{tolerance:.6e}; "
-                    f"minimum eigenvalue={eigenvalues.min():.6e}.")
+                    f"minimum eigenvalue={psd['minimum_eigenvalue']:.6e}, "
+                    f"tolerance={tolerance:.6e}.")
 
                 if n_negative and policy == "raise":
                     raise NonPositiveSemidefiniteError(message)
@@ -1280,7 +1295,8 @@ class Sandwich:
                         used_eigenvalues = np.abs(eigenvalues)
                     used = ((eigenvectors * used_eigenvalues) @ eigenvectors.T)
                 else:
-                    used_eigenvalues = eigenvalues.copy()
+                    used_eigenvalues = (eigenvalues.copy()
+                                        if eigenvalues is not None else None)
                     used = raw
 
                 slices = {
@@ -1296,12 +1312,17 @@ class Sandwich:
                     "eigenvalues": eigenvalues,
                     "used_eigenvalues": used_eigenvalues,
                     "eigenvectors": eigenvectors,
+                    "dimension": psd["dimension"],
+                    "minimum_eigenvalue": psd["minimum_eigenvalue"],
+                    "maximum_eigenvalue": psd["maximum_eigenvalue"],
+                    "spectral_radius": psd["spectral_radius"],
                     "tolerance": tolerance,
                     "negative_mask": negative_mask,
                     "all_negative_mask": all_negative_mask,
+                    "negative_eigenvalues": psd["negative_eigenvalues"],
                     "policy": policy,
                     "neg_eigval_policy": neg_eigval_policy,
-                    "asymmetry_norm": float(np.linalg.norm(raw - raw.T)),
+                    "asymmetry_norm": psd["asymmetry_norm"],
                 }
         return cov_block
 
@@ -1316,15 +1337,16 @@ class Sandwich:
         """Build one compact PSD-diagnostics row per selected ZA/MF block."""
         records = []
         for (za, mf), block in prepared.items():
-            eigenvalues = block["eigenvalues"]
             records.append({
                 "ZA": za_dict.get(za, str(za)),
                 "MF": _errorr_mf_to_int(mf),
                 "selected_MTs": block["mts"],
-                "dimension": len(eigenvalues),
-                "minimum_eigenvalue": float(eigenvalues.min()),
+                "dimension": block["dimension"],
+                "minimum_eigenvalue": block["minimum_eigenvalue"],
+                "maximum_eigenvalue": block["maximum_eigenvalue"],
+                "spectral_radius": block["spectral_radius"],
                 "tolerance": block["tolerance"],
-                "negative_eigenvalues": int(np.count_nonzero(block["negative_mask"])),
+                "negative_eigenvalues": block["negative_eigenvalues"],
                 "negative_eigenvalues_set_to_zero": (int(np.count_nonzero(block["all_negative_mask"]))
                                                       if block["policy"] == "eigen_decomp" and
                                                       block["neg_eigval_policy"] == "zero" else 0),
@@ -1344,6 +1366,8 @@ class Sandwich:
             "selected_MTs",
             "dimension",
             "minimum_eigenvalue",
+            "maximum_eigenvalue",
+            "spectral_radius",
             "tolerance",
             "negative_eigenvalues",
             "negative_eigenvalues_set_to_zero",
@@ -1384,11 +1408,26 @@ class Sandwich:
                         if (za, mf) not in prepared:
                             continue
                         block = prepared[(za, mf)]
+                        if block["eigenvectors"] is None:
+                            continue
                         vectors = {
                             mt: np.atleast_1d(
                                 sensitivity_vector(response, material, mf, mt, za)
                                              ) for mt in block["mts"]
                                     }
+                        total_sensitivity = np.concatenate([vectors[mt] for mt in block["mts"]])
+                        total_projections = (block["eigenvectors"].T @ total_sensitivity)
+                        raw_modal_variances = (block["eigenvalues"] * total_projections**2)
+                        raw_modal_variances_nominal = np.asarray(
+                            unp.nominal_values(raw_modal_variances), dtype=float)
+                        positive_variance = np.clip(
+                            raw_modal_variances_nominal, 0.0, None).sum()
+                        negative_variance = np.clip(
+                            raw_modal_variances_nominal, None, 0.0).sum()
+                        neg_to_pos_NDU_ratio = (
+                            abs(negative_variance) / positive_variance
+                            if positive_variance else
+                            (np.inf if negative_variance else 0.0))
                         za_label = za_dict[za]
                         mf_number = _errorr_mf_to_int(mf)
 
@@ -1423,6 +1462,7 @@ class Sandwich:
                                 "absolute_value_applied": absolute_value_applied,
                                 "raw_variance": raw_variance,
                                 "used_variance": used_variance,
+                                "neg_to_pos_NDU_ratio": neg_to_pos_NDU_ratio,
                             })
 
                             for mt, projection in projections.items():
@@ -1445,6 +1485,7 @@ class Sandwich:
                                     "used_diagonal_variance": used_diagonal,
                                     "used_cross_variance_allocated": used_cross,
                                     "used_attributed_variance": (used_diagonal + used_cross),
+                                    "neg_to_pos_NDU_ratio": neg_to_pos_NDU_ratio,
                                 })
 
         mode_index = ["RESPONSE", "MATERIAL", "ZA", "MF", "EIGENMODE"]
@@ -1456,6 +1497,7 @@ class Sandwich:
             "absolute_value_applied",
             "raw_variance",
             "used_variance",
+            "neg_to_pos_NDU_ratio",
         ]
         mt_index = mode_index + ["MT"]
         mt_columns = mt_index + [
@@ -1465,6 +1507,7 @@ class Sandwich:
             "used_diagonal_variance",
             "used_cross_variance_allocated",
             "used_attributed_variance",
+            "neg_to_pos_NDU_ratio",
         ]
         modes = pd.DataFrame(mode_records, columns=mode_columns)
         modes = modes.set_index(mode_index).sort_index()
@@ -1728,7 +1771,7 @@ class Sandwich:
                             missing_cov="zero", missing_cov_rsd=0.20,
                             missing_cov_corr=0.0, non_psd_policy="raise",
                             non_psd_rtol=1e-10, non_psd_atol=1e-12,
-                            neg_eigval_policy="zero",
+                            neg_eigval_policy="zero", psd_check_dims_warn_thresh=1000,
                             _prepared_covariance_blocks=None,
                             _include_eigenmode_tables=True):
         """
@@ -1769,6 +1812,8 @@ class Sandwich:
             Relative and absolute PSD eigenvalue tolerances.
         neg_eigval_policy : {"zero", "absolute"}, optional
             Treatment of negative eigenvalues under ``"eigen_decomp"``.
+        psd_check_dims_warn_thresh : int or None, optional
+            Warn above this selected covariance-matrix dimension. ``None`` disables it.
 
         Returns
         -------
@@ -1782,7 +1827,8 @@ class Sandwich:
                                                             non_psd_policy=non_psd_policy, 
                                                             non_psd_rtol=non_psd_rtol,
                                                             non_psd_atol=non_psd_atol, 
-                                                            neg_eigval_policy=neg_eigval_policy)
+                                                            neg_eigval_policy=neg_eigval_policy,
+                                                            psd_check_dims_warn_thresh=psd_check_dims_warn_thresh)
         else:
             prepared = _prepared_covariance_blocks
 
@@ -2036,7 +2082,7 @@ class Sandwich:
                                  missing_cov="zero", missing_cov_rsd=0.20,
                                  missing_cov_corr=0.0, non_psd_policy="raise",
                                  non_psd_rtol=1e-10, non_psd_atol=1e-12,
-                                 neg_eigval_policy="zero"):
+                                 neg_eigval_policy="zero", psd_check_dims_warn_thresh=1000):
         """
         Compute covariance-weighted representativity between two sensitivities.
 
@@ -2074,6 +2120,8 @@ class Sandwich:
             Relative and absolute PSD eigenvalue tolerances.
         neg_eigval_policy : {"zero", "absolute"}, optional
             Treatment of negative eigenvalues under ``"eigen_decomp"``.
+        psd_check_dims_warn_thresh : int or None, optional
+            Warn above this selected covariance-matrix dimension. ``None`` disables it.
 
         Returns
         -------
@@ -2088,6 +2136,7 @@ class Sandwich:
                                                         non_psd_rtol=non_psd_rtol,
                                                         non_psd_atol=non_psd_atol,
                                                         neg_eigval_policy=neg_eigval_policy,
+                                                        psd_check_dims_warn_thresh=psd_check_dims_warn_thresh,
                                                         )
 
         mat = _default_material_for_integral_comparison(sens)
@@ -2270,6 +2319,7 @@ class Sandwich:
             non_psd_rtol=non_psd_rtol,
             non_psd_atol=non_psd_atol,
             neg_eigval_policy=neg_eigval_policy,
+            psd_check_dims_warn_thresh=psd_check_dims_warn_thresh,
             _prepared_covariance_blocks=prepared,
             _include_eigenmode_tables=False)
         unc2, dict_map2 = Sandwich.compute_uncertainty(
@@ -2281,6 +2331,7 @@ class Sandwich:
             non_psd_rtol=non_psd_rtol,
             non_psd_atol=non_psd_atol,
             neg_eigval_policy=neg_eigval_policy,
+            psd_check_dims_warn_thresh=psd_check_dims_warn_thresh,
             _prepared_covariance_blocks=prepared,
             _include_eigenmode_tables=False)
 
